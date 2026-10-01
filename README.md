@@ -205,3 +205,15 @@ Findings print at approval time next to the verifier badges. Known
 limit, documented in tests: a When and Then that *consistently*
 hallucinate the same invented value are not deterministically
 catchable — that needs model or human judgment.
+
+## Suggestion library: filling knowledge gaps (v0.8)
+
+Some failures are missing idioms, not bad reasoning — e2b hardcoded
+`print("main.py")` across five evals because it didn't know
+`os.path.basename(__file__)`. `harness/suggestions.py` pairs trigger
+phrases with copy-pasteable idioms; matches are injected into the
+planner prompt (so the plan doesn't bake in the broken implementation)
+and into TDD retry feedback (so a failed attempt gets the idiom next
+to the checker's complaint). Pure data + substring matching, zero
+model calls. Add entries as new gaps are observed — each needs the
+idiom itself, not just advice.

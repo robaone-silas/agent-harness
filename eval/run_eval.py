@@ -149,8 +149,10 @@ def _retry_task_text(task: str, failure_msg: str, sbox: Path) -> str:
     """Build the TDD retry prompt: original task + checker feedback + workspace
     state. The model must know its previous work is still on disk, so it plans
     the fix idempotently instead of recreating what already succeeded
-    (e.g. `mkdir` on an existing directory)."""
-    return (task
+    (e.g. `mkdir` on an existing directory). Known idioms for the task ride
+    along so a knowledge gap doesn't fail twice the same way."""
+    from harness import suggestions as _sug
+    text = (task
             + "\n\nPREVIOUS ATTEMPT FAILED the acceptance check: "
             + failure_msg
             + "\nThe workspace still contains everything from your previous attempt "
@@ -160,6 +162,10 @@ def _retry_task_text(task: str, failure_msg: str, sbox: Path) -> str:
               "inspect what exists, prefer idempotent operations "
               "(e.g. `mkdir -p`, overwrite files instead of recreating them), "
               "and address exactly the checker's complaint above.")
+    found = _sug.for_task(task)
+    if found:
+        text += ("\n\nKnown idioms that apply to this task:\n" + _sug.render(found))
+    return text
 
 
 def main() -> int:

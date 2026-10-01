@@ -28,6 +28,7 @@ from .config import Config
 
 
 def build_planner_prompt(task: str, tool_names: list[str]) -> str:
+    idioms = _idiom_block(task)
     return f"""You are a planner. Break the task below into a short sequence of small steps.
 Write the plan in Gherkin — one Scenario per step, in order.
 
@@ -59,8 +60,18 @@ Rules:
 - A Given line is optional, for starting-state context a step needs.
 - Do NOT add verify or summarize scenarios — the harness handles finishing.
 - Return ONLY the Gherkin, no other text.
-
+{idioms}
 Task: {task}"""
+
+
+def _idiom_block(task: str) -> str:
+    """Known idioms matching this task, for the planner prompt (may be empty)."""
+    from . import suggestions as _sug
+    found = _sug.for_task(task)
+    if not found:
+        return ""
+    return ("\nKnown idioms that apply to this task — use them instead of "
+            "hardcoding:\n" + _sug.render(found) + "\n")
 
 
 @dataclass

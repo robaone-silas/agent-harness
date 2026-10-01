@@ -1,0 +1,11 @@
+# run artifacts (logs, sandboxes) stay local — same policy as the Drive zips
+eval-results-*.jsonl
+eval-sandboxes/
+demo-sandbox/
+demo-trace.jsonl
+sandbox/
+plan-*.json
+plan.feature
+# python
+__pycache__/
+*.pyc

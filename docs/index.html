@@ -1,0 +1,384 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <title>agent-harness: Small models, real work</title>
+    <meta name="description" content="A zero-dependency Python agent harness that lets small local language models do real, checkable work." />
+    <meta name="application-name" content="agent-harness" />
+    <link rel="canonical" href="https://robaone-silas.github.io/agent-harness/" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="agent-harness" />
+    <meta property="og:title" content="agent-harness: Small models, real work" />
+    <meta property="og:description" content="A zero-dependency Python agent harness that lets small local language models do real, checkable work." />
+    <meta property="og:url" content="https://robaone-silas.github.io/agent-harness/" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:image" content="https://robaone-silas.github.io/agent-harness/assets/og-image.jpg" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:image:alt" content="agent-harness: small models, real work" />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="agent-harness: Small models, real work" />
+    <meta name="twitter:description" content="A zero-dependency Python agent harness that lets small local language models do real, checkable work." />
+    <meta name="twitter:image" content="https://robaone-silas.github.io/agent-harness/assets/og-image.jpg" />
+
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <meta name="theme-color" content="#f4efe5" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#15211b" media="(prefers-color-scheme: dark)" />
+    <meta name="color-scheme" content="light" />
+
+    <link rel="preload" href="assets/hero-horizon.webp" as="image" type="image/webp" fetchpriority="high" />
+    <link rel="preload" href="assets/hero-midground.webp" as="image" type="image/webp" fetchpriority="high" />
+    <link rel="preload" href="assets/hero-foreground.webp" as="image" type="image/webp" fetchpriority="high" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="script.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#top">Skip to content</a>
+    <div class="page-progress" aria-hidden="true"><span></span></div>
+
+    <header class="site-header" data-header>
+      <nav class="nav-shell wrap" aria-label="Primary navigation">
+        <a class="brand" href="#top" aria-label="agent-harness home">
+          <svg viewBox="0 0 32 32" aria-hidden="true"><path d="M16 2.8 18.7 13 29 16l-10.3 3L16 29.2 13.2 19 3 16l10.2-3L16 2.8Z"/><circle cx="16" cy="16" r="3.4"/></svg>
+          <span>agent-harness</span>
+        </a>
+        <div class="nav-links" id="nav-links">
+          <a href="#philosophy">Philosophy</a>
+          <a href="#features">Principles</a>
+          <a href="#expansion">Expansion</a>
+          <a href="#stories">Results</a>
+        </div>
+        <div class="nav-end">
+          <a class="button button-small button-dark" href="https://github.com/robaone-silas/agent-harness/releases/tag/v0.8.0"><span>v0.8.0 release</span><span aria-hidden="true">↗</span></a>
+          <button class="nav-toggle" type="button" aria-expanded="false" aria-controls="nav-links" aria-label="Open menu" data-nav-toggle>
+            <span class="nav-toggle-bars" aria-hidden="true"><i></i><i></i></span>
+          </button>
+        </div>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-atmosphere" aria-hidden="true"></div>
+        <div class="hero-copy wrap" data-reveal="hero">
+          <div class="rating-pill">
+            <div class="avatar-stack" aria-hidden="true"><span>e2b</span><span>e4b</span><span>✓</span><span>+</span></div>
+            <p><strong>5/5</strong> eval tasks passed by a 2B model</p>
+            <span class="pill-star" aria-hidden="true">★</span>
+          </div>
+          <p class="eyebrow"><span class="eyebrow-mark">✦</span> An agent harness for small language models</p>
+          <h1 id="hero-title">Can a tiny model<br /><em>do real work?</em></h1>
+          <p class="hero-lede">Yes, with the right support and guidance. The philosophy is simple: never ask a small model to be its own manager. The harness agrees on a plan in plain language, verifies every step in code, and turns failures into feedback, so a two-billion-parameter model on a laptop can do real, reviewable work.</p>
+          <div class="hero-actions">
+            <a class="button button-primary" href="https://github.com/robaone-silas/agent-harness"><span>Get the code</span><span aria-hidden="true">↗</span></a>
+            <a class="text-link" href="#philosophy">Read the philosophy <span aria-hidden="true">↓</span></a>
+          </div>
+        </div>
+
+        <div class="hero-scene" aria-hidden="true">
+          <img class="hero-layer hero-layer-horizon" data-parallax="horizon" fetchpriority="high" decoding="async" src="assets/hero-horizon.webp" width="2172" height="724" alt="" />
+          <img class="hero-layer hero-layer-midground" data-parallax="midground" fetchpriority="high" decoding="async" src="assets/hero-midground.webp" width="2172" height="724" alt="" />
+          <img class="hero-layer hero-layer-foreground" data-parallax="foreground" fetchpriority="high" decoding="async" src="assets/hero-foreground.webp" width="2172" height="724" alt="" />
+          <div class="hero-edge-mask"></div>
+          <div class="hero-proof-scrim"></div>
+        </div>
+
+        <div class="hero-proof wrap" data-reveal>
+          <div class="press-lockup" role="group" aria-label="Featured by">
+            <small>Built on</small>
+            <span>OLLAMA</span><span>GEMMA 4</span><span>PYTHON STDLIB</span><span>GHERKIN</span>
+          </div>
+        </div>
+      </section>
+
+      <section class="promise section-pad" id="philosophy" data-reveal>
+        <div class="wrap narrow centered">
+          <p class="section-kicker">The philosophy</p>
+          <h2>Strategy belongs in the harness.<br /><em>Not in the model.</em></h2>
+          <p style="max-width:660px;margin:20px auto 0;line-height:1.65">Every failure we traced came back to language, sequencing, or checking, not raw intelligence. So the harness owns those jobs. The model gets one small, clear piece of work at a time, a contract it helped write, and a checker that says exactly what went wrong. Executive function belongs in code, where it can be tested, not in a prompt, where it can only be hoped for.</p>
+          <p style="max-width:660px;margin:14px auto 0;line-height:1.65">And it runs locally, on hardware people already own, with no API bill. Capability should not have to be rented by the token.</p>
+          <div class="founder-note"><span class="founder-seal">✦</span><span>An open-source experiment in small-model agency</span></div>
+        </div>
+      </section>
+
+      <section class="workspace-section section-pad" id="workspace">
+        <div class="wrap centered section-heading" data-reveal>
+          <p class="section-kicker">Agreement before action</p>
+          <h2>The blueprint both sides sign.</h2>
+          <p>The planner writes its work up as Gherkin, one scenario per step. You review and edit the plan before anything runs. Then the harness executes exactly what was approved.</p>
+        </div>
+
+        <div class="dashboard-shell wrap" data-reveal>
+          <aside class="dash-sidebar">
+            <div class="dash-logo"><span class="mini-star">✦</span>agent-harness</div>
+            <p class="dash-label">Plan</p>
+            <span class="dash-nav active"><span aria-hidden="true">⌂</span>Scenario</span>
+            <span class="dash-nav"><span aria-hidden="true">◎</span>Steps</span>
+            <span class="dash-nav"><span aria-hidden="true">✎</span>Checks</span>
+            <span class="dash-nav"><span aria-hidden="true">◇</span>Retries</span>
+            <span class="dash-nav"><span aria-hidden="true">⌁</span>Suggestions</span>
+            <div class="dash-spacer"></div>
+            <div class="dash-meter"><span>Steps verified in code</span><strong>3/3</strong><i><b></b></i></div>
+            <div class="dash-user"><span class="user-orb">2B</span><div><strong>gemma4:e2b</strong><small>via Ollama, local</small></div></div>
+          </aside>
+
+          <div class="dash-main">
+            <div class="dash-topline"><div><small>Scenario: Capture the script's output</small><h3>Plan approved. Running.</h3></div><span class="dash-bell" aria-hidden="true">◌</span></div>
+            <div class="dash-grid">
+              <article class="dash-focus">
+                <div><p class="card-kicker">The contract</p><h4>Given src/main.py prints its own filename</h4><p>When I run it and save the output to out.txt, then out.txt exists, and out.txt contains the name of the script that ran.</p><span class="dash-action">Checks itself: verifier <span aria-hidden="true">→</span></span></div>
+                <div class="focus-orbit" aria-hidden="true"><span></span><span></span><span></span><i>03</i></div>
+              </article>
+              <article class="dash-pulse"><p class="card-kicker">Eval score</p><strong>5/5</strong><span>tasks passed</span><div class="spark-bars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></article>
+              <article class="dash-route">
+                <div class="route-head"><p class="card-kicker">The plan</p><span>3 of 3</span></div>
+                <div class="route-track" aria-hidden="true"><b></b><i class="r1"></i><i class="r2"></i><i class="r3"></i><i class="r4"></i></div>
+                <ol><li class="done">Write src/main.py</li><li class="done">Run it, save out.txt</li><li class="done">Verify the output</li></ol>
+              </article>
+              <article class="dash-notes"><p class="card-kicker">The idea in one line</p><blockquote>“The problem wasn't the model. It was the support it never had.”</blockquote><small>A Practical Agent Harness for Small Language Models</small></article>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="features section-pad" id="features">
+        <div class="wrap narrow centered section-heading" data-reveal>
+          <p class="section-kicker">The philosophy, in six principles</p>
+          <h2>Do not make the model smarter.<br />Make the work checkable.</h2>
+          <p>Each mechanism in the harness exists because a failure taught us where a job really belongs: in the model, or in the code around it. Almost every time, the answer was the code.</p>
+        </div>
+
+        <div class="feature-grid wrap">
+          <article class="feature-card" data-reveal>
+            <div class="feature-visual tint-coral">
+              <div class="world-stage decision-stage">
+<div class="decision-card card-a"><small>Option A</small><strong>A vague prompt</strong><span>Fast start · fuzzy contract</span></div>
+            <div class="decision-card card-b"><small>Option B</small><strong>A Gherkin plan</strong><span>Reviewed first · checkable steps</span></div>
+            <svg class="decision-lines" viewBox="0 0 620 500" aria-hidden="true"><path d="M72 94 C210 98 216 250 310 250 C410 250 408 405 552 405"/><path d="M72 405 C196 405 212 250 310 250 C414 250 426 94 552 94"/><circle cx="310" cy="250" r="11"/></svg>
+            <div class="decision-center"><span>The shared contract</span><strong>A blueprint both sides sign</strong><small>Observable outcomes, freedom on the how</small></div>
+              </div>
+            </div>
+            <h3>1. Agree before you act</h3>
+            <p class="feature-head">A language both sides agree on.</p>
+            <p>The planner proposes a .feature file, one scenario per step. You review and edit it before anything runs. Nothing executes unapproved.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <div class="feature-visual tint-sage">
+              <div class="world-stage atlas-stage">
+<div class="atlas-map" aria-hidden="true"><i class="contour c1"></i><i class="contour c2"></i><i class="contour c3"></i><span class="pin p1">✓</span><span class="pin p2">✓</span><span class="pin p3">✓</span></div>
+            <div class="atlas-list">
+              <p class="card-kicker">Checks for this step</p>
+              <div><span class="match-icon rust">✓</span><p><strong>out.txt exists</strong><small>exists verifier</small></p><b>→</b></div>
+              <div><span class="match-icon blue">✓</span><p><strong>answer.txt contains exactly "100"</strong><small>contains_exactly verifier</small></p><b>→</b></div>
+              <div><span class="match-icon gold">✓</span><p><strong>greeting.txt has 1 line</strong><small>has_lines verifier</small></p><b>→</b></div>
+            </div>
+              </div>
+            </div>
+            <h3>2. Verify in code, not on trust</h3>
+            <p class="feature-head">Every Then, checked in code.</p>
+            <p>Deterministic verifiers check each step the moment it finishes, at zero model cost. Prose the harness cannot phrase as a check is badged honestly: on trust, never quietly believed.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <div class="feature-visual tint-blue">
+              <div class="world-stage constellation-stage">
+<svg viewBox="0 0 640 520" aria-hidden="true">
+              <g class="constellation-lines"><path d="M115 185 244 92 363 198 520 108 562 324 374 420 190 375 115 185Z"/><path d="m244 92 130 328M115 185l405-77M190 375l173-177M363 198l199 126"/></g>
+              <g class="constellation-nodes"><circle cx="115" cy="185" r="16"/><circle cx="244" cy="92" r="12"/><circle cx="363" cy="198" r="22"/><circle cx="520" cy="108" r="13"/><circle cx="562" cy="324" r="18"/><circle cx="374" cy="420" r="15"/><circle cx="190" cy="375" r="11"/></g>
+            </svg>
+            <div class="pattern-score"><small>Lint result</small><strong>0</strong><span>errors found</span></div>
+            <div class="pattern-tag tag-one">dangling_file <b>error</b></div><div class="pattern-tag tag-two">value_from_nowhere <b>warn</b></div><div class="pattern-tag tag-three">unparseable_check <b>warn</b></div>
+              </div>
+            </div>
+            <h3>3. Catch errors where they are cheap</h3>
+            <p class="feature-head">Design errors, caught before approval.</p>
+            <p>A deterministic pass cross-checks the plan before you ever see it: files no step creates, values that appear from nowhere, checks no verifier can parse.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <div class="feature-visual tint-gold">
+              <div class="world-stage roadmap-stage">
+<div class="roadmap-date"><small>Attempt</small><strong>2</strong><span>Same workspace, kept as-is</span></div>
+            <div class="roadmap-column"><article class="done"><small>Attempt 1</small><strong>Acceptance check failed</strong><span>out.txt did not match</span></article><article class="now"><small>In focus</small><strong>Retry with the exact failure as feedback</strong><span>Fix only, do not redo</span></article><article><small>Result</small><strong>Acceptance check passes</strong><span>Task complete</span></article></div>
+              </div>
+            </div>
+            <h3>4. Treat failure as feedback</h3>
+            <p class="feature-head">Measure twice, cut once.</p>
+            <p>When a check fails, the checker stops being a grader and becomes a teacher. Its exact failure message goes back as the next instruction.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <div class="feature-visual tint-lilac">
+              <div class="world-stage dialogue-stage">
+<div class="dialogue-header"><span class="thinking-orb">✦</span><div><strong>Idiom found</strong><small>python-own-filename</small></div></div>
+            <div class="bubble system">This task needs the script to print its own filename. Which idiom fits?</div>
+            <div class="choice-row" role="group" aria-label="Pick an idiom"><button type="button">os.path.basename(__file__)</button><button type="button">sys.argv[0]</button><button type="button">print("main.py")</button></div>
+            <div class="bubble user">os.path.basename(__file__). Never write the filename literally.</div>
+            <div class="typing"><i></i><i></i><i></i></div>
+              </div>
+            </div>
+            <h3>5. Fill the gap, do not blame the model</h3>
+            <p class="feature-head">Fill the knowledge gap, not the model.</p>
+            <p>The model's most stubborn failure was never reasoning. It just had not been shown the idiom. Trigger phrases slip copy-pasteable idioms into the plan and the retry.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <div class="feature-visual tint-dark">
+              <div class="world-stage choice-stage">
+<div class="choice-orbit orbit-a"><span>Behavior</span></div><div class="choice-orbit orbit-b"><span>Intent</span></div><div class="choice-orbit orbit-c"><span>Proof</span></div>
+            <div class="choice-core"><small>The renamed-copy test</small><strong>Output must<br />change</strong><span>Hardcoding fails here</span></div>
+              </div>
+            </div>
+            <h3>6. Prove intent, not just output</h3>
+            <p class="feature-head">You cannot fake understanding.</p>
+            <p>The checker runs a renamed copy of the script in a temp directory and demands the output change. print("main.py") passes if you squint. It does not pass this.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="compare section-pad" id="compare">
+        <div class="wrap centered section-heading" data-reveal><p class="section-kicker">Choose the harness, not the hype</p><h2>Why not just prompt a bigger model?</h2><p>A bare prompt loop can generate code. The harness makes the work reviewable, verified, and repeatable, on hardware you already own.</p></div>
+        <div class="compare-table wrap" data-reveal>
+          <div class="compare-row compare-head"><div></div><div class="aster-col"><span class="mini-star">✦</span>agent-harness</div><div>Bare prompt loop</div><div>Giant hosted model</div></div>
+          <div class="compare-row"><div>Plan reviewed by a human before anything runs</div><div class="aster-col yes">✓</div><div>No</div><div>No</div></div>
+          <div class="compare-row"><div>Every step verified in code</div><div class="aster-col yes">✓</div><div>No</div><div>No</div></div>
+          <div class="compare-row"><div>Retries with the exact failure as feedback</div><div class="aster-col yes">✓</div><div>Manual</div><div>Partial</div></div>
+          <div class="compare-row"><div>Runs fully local, no API bill</div><div class="aster-col yes">✓</div><div>✓</div><div>No</div></div>
+          <div class="compare-row"><div>Zero dependencies</div><div class="aster-col yes">✓</div><div>Varies</div><div>No</div></div>
+          <div class="compare-row"><div>Works on a plain laptop</div><div class="aster-col yes">✓</div><div>✓</div><div>No</div></div>
+        </div>
+      </section>
+
+      <section class="features section-pad" id="expansion">
+        <div class="wrap narrow centered section-heading" data-reveal>
+          <p class="section-kicker">Where this goes next</p>
+          <h2>The same philosophy,<br /><em>expanded to do more.</em></h2>
+          <p>The harness grows the way it was built: one honest failure at a time. Each expansion below moves another job out of the model and into code, or turns one hard-won lesson into something reusable.</p>
+        </div>
+        <div class="feature-grid wrap">
+          <article class="feature-card" data-reveal>
+            <h3>More of the plan checks itself</h3>
+            <p class="feature-head">Richer verification.</p>
+            <p>Today about half of all Then clauses verify deterministically; the rest are taken on trust. Give verifiers the full picture of a step, its tool calls, its captured output, its sub-run result, and add command and output verifiers. Every point of hit rate gained is a step no one has to take on faith.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>A library that keeps growing</h3>
+            <p class="feature-head">Knowledge gaps, filled permanently.</p>
+            <p>The suggestion library starts with one idiom a 2B model was missing. It grows into packs: files and data, documents, spreadsheets, research with sources. A gap only has to be discovered once. After that, every future plan gets the idiom for free.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>Tools that absorb whole loops</h3>
+            <p class="feature-head">Never hand the model a loop it can hallucinate.</p>
+            <p>grep_files exists because listing and scanning files by hand gave the model filenames it could invent. That pattern generalises: whenever a job is a loop the model would have to narrate, the loop becomes a tool, and the model goes back to choosing and judging.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>Plans people can reuse</h3>
+            <p class="feature-head">Approved work becomes a template.</p>
+            <p>A Gherkin plan a human has reviewed and approved should not be thrown away. Saved plans become a library of trusted recipes: recurring research, data clean-up, document drafting, household and project chores, each one re-runnable and re-checkable.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>Bigger tasks, chained plans</h3>
+            <p class="feature-head">Decomposition, all the way up.</p>
+            <p>If a step is too big, it gets its own plan. Plans can call plans, with checkpoints a human can inspect between them. That is how you get from five micro-tasks to an afternoon of real work without ever asking the model to hold the whole job in its head.</p>
+          </article>
+          <article class="feature-card" data-reveal>
+            <h3>Any model, same harness</h3>
+            <p class="feature-head">Scale the model only if you want to.</p>
+            <p>Nothing in the harness is specific to one model. Run it with a 2B model on a laptop, a larger model on a workstation, or split the roles, one model planning and a smaller one executing. The philosophy does not change with the parameter count, and neither does the contract.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="stories section-pad" id="stories">
+        <div class="wrap story-heading" data-reveal><div><p class="section-kicker">The philosophy, tested</p><h2>Five tasks.<br /><em>Five passes.</em></h2></div><p>The five-task checkable eval, run against gemma4:e2b and gemma4:e4b on a Mac via Ollama. Every card below is a real task from the recorded eval runs of October 1, 2026.</p></div>
+        <div class="story-wall-shell">
+          <div class="story-wall" data-reveal>
+            <article class="story-card">
+              <header class="story-head">
+                <span class="story-avatar coral" aria-hidden="true">01</span>
+                <div><p class="story-name">write-file</p><p class="story-stars" role="img" aria-label="Passed">PASS ✓</p></div>
+              </header>
+              <p class="story-body">The warm-up: write a file with exact contents. The model writes it, the checker verifies it byte for byte.</p>
+              <p class="story-meta"><time>Oct 1, 2026</time><span aria-hidden="true">·</span><span>Passed, attempt 1</span></p>
+            </article>
+            <article class="story-card">
+              <header class="story-head">
+                <span class="story-avatar sage" aria-hidden="true">02</span>
+                <div><p class="story-name">read-and-compute</p><p class="story-stars" role="img" aria-label="Passed">PASS ✓</p></div>
+              </header>
+              <p class="story-body">Read numbers from a file and write their sum. The first answer was 100.0. The checker demanded the plain integer, and the TDD retry fixed exactly that.</p>
+              <p class="story-meta"><time>Oct 1, 2026</time><span aria-hidden="true">·</span><span>Passed, attempt 2</span></p>
+            </article>
+            <article class="story-card">
+              <header class="story-head">
+                <span class="story-avatar blue" aria-hidden="true">03</span>
+                <div><p class="story-name">search</p><p class="story-stars" role="img" aria-label="Passed">PASS ✓</p></div>
+              </header>
+              <p class="story-body">Find the file containing a needle string. The grep_files tool moves the scan into code, so the model never touches a filename it has not been shown.</p>
+              <p class="story-meta"><time>Oct 1, 2026</time><span aria-hidden="true">·</span><span>Passed, attempt 1</span></p>
+            </article>
+            <article class="story-card">
+              <header class="story-head">
+                <span class="story-avatar gold" aria-hidden="true">04</span>
+                <div><p class="story-name">fix-bug</p><p class="story-stars" role="img" aria-label="Passed">PASS ✓</p></div>
+              </header>
+              <p class="story-body">A seeded bug in existing code. The model reads the file, finds the fault, and patches it instead of rewriting the world.</p>
+              <p class="story-meta"><time>Oct 1, 2026</time><span aria-hidden="true">·</span><span>Passed, attempt 1</span></p>
+            </article>
+            <article class="story-card">
+              <header class="story-head">
+                <span class="story-avatar coral" aria-hidden="true">05</span>
+                <div><p class="story-name">multi-step</p><p class="story-stars" role="img" aria-label="Passed">PASS ✓</p></div>
+              </header>
+              <p class="story-body">The flagship: a script that prints its own filename, run and captured. The renamed-copy smell gate proves the name is computed, not hardcoded.</p>
+              <p class="story-meta"><time>Oct 1, 2026</time><span aria-hidden="true">·</span><span>Passed, attempt 1</span></p>
+            </article>
+          </div>
+          <div class="story-fade" aria-hidden="true"></div>
+          <div class="story-count">
+            <div class="avatar-stack" aria-hidden="true"><span>01</span><span>02</span><span>03</span><span>04</span></div>
+            <strong>Both models pass 5/5. e2b does it all on the first attempt.</strong>
+            <a href="https://github.com/robaone-silas/agent-harness/tree/main/eval">See the eval <span aria-hidden="true">⌄</span></a>
+          </div>
+        </div>
+      </section>
+
+      <section class="faq section-pad" id="questions">
+        <div class="wrap faq-layout">
+          <div class="faq-intro" data-reveal><p class="section-kicker">Questions, answered</p><h2>The useful things to know before you run it.</h2><p>What it is, what it needs, and what happens when a check fails.</p></div>
+          <div class="faq-list" data-reveal>
+            <details open><summary>What does agent-harness actually do?<span>+</span></summary><p>It gives a small local language model a set of jailed tools, a reviewed plan, and a verification loop. The model proposes and executes small steps. The harness owns the strategy, the checks, and the retries.</p></details>
+            <details><summary>Why not just use a bigger model?<span>+</span></summary><p>Bigger models fail differently, not less: in our eval the 4B model was slower and sloppier, with literal placeholders in its plans. Every capability moved into the harness is capability that does not require a bigger model, so the work runs on smaller machines.</p></details>
+            <details><summary>Does the harness run unattended?<span>+</span></summary><p>Only if you ask it to. The default workflow is review-first: the agent proposes a Gherkin plan, you edit and approve it, and only then does anything execute. Auto mode exists, but review is the point.</p></details>
+            <details><summary>What do I need to run it?<span>+</span></summary><p>Python 3 and Ollama with a small model pulled, for example gemma4:e2b. The harness itself is zero-dependency standard library Python. Set HARNESS_ENDPOINT if Ollama lives on another machine.</p></details>
+            <details><summary>What happens when a check fails?<span>+</span></summary><p>The checker's exact failure message becomes the next instruction, and the run retries on the same workspace: fix only, never redo. Per-step verification gets one retry, then warns and continues, because the task checker is the final judge of correctness.</p></details>
+            <details><summary>What is Gherkin doing here?<span>+</span></summary><p>Gherkin is the bridge language: a plain-language contract that the human and the agent can genuinely agree on. The plan states observable outcomes. The agent stays free on the how.</p></details>
+            <details><summary>How far can this expand?<span>+</span></summary><p>Along the lines it already grew: more verifiers so fewer steps are taken on trust, a bigger suggestion library so gaps are filled once and for all, tools that absorb whole loops, reusable approved plans, and chained plans for bigger jobs. The model can stay exactly the same size while the harness around it gets better at its job.</p></details>
+            <details><summary>Is it really zero dependencies?<span>+</span></summary><p>Yes. Pure Python 3 standard library, talking to your local Ollama server. No packages to install, no API keys, no cloud.</p></details>
+          </div>
+        </div>
+      </section>
+
+      <section class="closing" id="start">
+        <div class="closing-stars" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
+        <div class="closing-copy wrap centered" data-reveal>
+          <span class="closing-mark">✦</span><p class="section-kicker">The philosophy scales</p>
+          <h2>Build the support once.<br /><em>Every job after it gets easier.</em></h2>
+          <p>Start with one small model and one checkable task. Add a verifier when a step is taken on trust, a suggestion when a gap appears, a tool when a loop repeats. Clone the repo, pull a two-billion-parameter model, and give it real work.</p>
+          <a class="button button-light" href="https://github.com/robaone-silas/agent-harness"><span>Get the code</span><span aria-hidden="true">↗</span></a>
+          <small>Runs on your machine · No API bill · Open models, Apache 2.0</small>
+        </div>
+        <img class="closing-horizon" src="assets/hero-horizon.webp" loading="lazy" decoding="async" width="2172" height="724" alt="" aria-hidden="true" />
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap footer-grid">
+        <div class="footer-brand"><a class="brand" href="#top"><span class="mini-star">✦</span>agent-harness</a><p>Small models, real work.</p><small>By Ansel Robateau · 2026</small></div>
+        <div><strong>Project</strong><a href="#workspace">How it works</a><a href="#features">Features</a><a href="#compare">Compare</a><a href="https://github.com/robaone-silas/agent-harness/releases/tag/v0.8.0">Release v0.8.0</a></div>
+        <div><strong>Explore</strong><a href="#stories">Results</a><a href="#questions">Questions</a><a href="https://site.robaone.com/blog/a-practical-agent-harness-for-small-language-models">Blog post</a><a href="https://robaone-silas.github.io/agent-harness/">Docs page</a></div>
+        <div><strong>Code</strong><a href="https://github.com/robaone-silas/agent-harness">GitHub</a><a href="https://github.com/robaone-silas/agent-harness/releases">Releases</a><a href="https://github.com/robaone-silas/agent-harness/issues">Issues</a><a href="https://site.robaone.com">RobaOne</a></div>
+      </div>
+    </footer>
+  </body>
+</html>

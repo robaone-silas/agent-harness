@@ -6,6 +6,8 @@ A minimal agent harness built for small local models, starting with
 The bet: if a 2B model can do real work when every problem is broken into
 small enough pieces, the same harness scales straight up to larger models.
 
+**Project page:** https://robaone-silas.github.io/agent-harness/
+
 ## Quickstart (on your Mac)
 
 ```bash

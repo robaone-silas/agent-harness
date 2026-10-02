@@ -247,3 +247,13 @@ harness-written, access reuses the tool the model already knows.
 `latest.txt` is the continuation hook for a later session, and one
 `.gitignore` line (`.harness/`) keeps the records out of a git
 workspace's history.
+
+Same release, a smaller field fix: `list_dir` was shallow only, and
+listing a subfolder returned bare names no other tool could use as a
+path. It now takes an optional `depth` (default 1, the old behavior;
+the walk itself lives in code, the model only chooses how deep).
+Entries return as workspace-relative paths, folders with a trailing
+`/`; the listing is sorted, capped at 500 entries with the truncation
+announced, and symlinked folders are listed but never followed, so
+the walk cannot leave the jail. The `.harness/` records folder is not
+listed: it is bookkeeping, not user data.

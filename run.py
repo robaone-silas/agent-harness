@@ -75,6 +75,8 @@ def show_event(kind, *args, quiet=False):
     elif kind == "step_done":
         tag = " done (verification warnings waived)." if args[0].verify_waived else " done."
         print(f"  step {args[0].id}{tag}")
+        if getattr(args[0], "output_path", ""):
+            print(f"    output: {args[0].output_path}")
     elif kind == "step_verify_waived":
         step, vres = args[0], args[1]
         print(f"  ! step {step.id}: verification failed twice — continuing with warning:")

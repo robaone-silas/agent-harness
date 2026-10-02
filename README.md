@@ -219,3 +219,31 @@ and into TDD retry feedback (so a failed attempt gets the idiom next
 to the checker's complaint). Pure data + substring matching, zero
 model calls. Add entries as new gaps are observed — each needs the
 idiom itself, not just advice.
+
+## Step-output store: data survives the step boundary (v0.8.1)
+
+First field failure of the shipped harness: a plan listed the files in
+a documents folder in step 1, then forgot the list by the step that was
+supposed to suggest an organization for them. Only a 250 character
+summary of each step's final answer crossed the boundary; tool outputs,
+where the real data lives, never did.
+
+`harness/runstore.py` fixes that in the harness, not the model. After
+every step, the harness writes the step's full record to a
+deterministic file:
+
+```
+<workspace>/.harness/runs/<YYYYMMDD-HHMMSS>/step-01.md
+<workspace>/.harness/latest.txt          (newest run folder name)
+```
+
+Each record holds the instruction, the Then clauses, every tool call
+with its result verbatim, the final answer, and the verification
+outcome, including earlier attempts when verification retried the step.
+Each step's prompt then names the exact prior-step files and tells the
+model to `read_file` the one it needs when it needs exact data instead
+of the summary. No new tool was needed: storage is deterministic and
+harness-written, access reuses the tool the model already knows.
+`latest.txt` is the continuation hook for a later session, and one
+`.gitignore` line (`.harness/`) keeps the records out of a git
+workspace's history.

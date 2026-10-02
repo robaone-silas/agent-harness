@@ -58,6 +58,10 @@ Rules:
   never "total.txt contains exactly "12345"". Acceptance criteria state WHAT to
   check, not the implementation's literal output.
 - A Given line is optional, for starting-state context a step needs.
+- Steps may rely on data produced by earlier steps: the harness stores each
+  step's full output (tool results included) in a file and tells the executor
+  the exact path, so a later step can read an earlier step's real output.
+  Still never invent the values themselves in a Then.
 - Do NOT add verify or summarize scenarios — the harness handles finishing.
 - Return ONLY the Gherkin, no other text.
 {idioms}
@@ -85,6 +89,7 @@ class PlanStep:
     verify: list = field(default_factory=list)  # per-Then check records (v0.7)
     lint: list = field(default_factory=list)  # planlint findings (dicts)
     verify_waived: bool = False  # verification failed but step accepted anyway
+    output_path: str = ""  # .harness/runs/<run>/step-NN.md (v0.8.1, issue #2)
 
 
 def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
@@ -170,17 +175,21 @@ class PlannedRun:
     status: str  # done | plan_failed | step_failed | model_error
     answer: str
     steps: list[PlanStep] = field(default_factory=list)
+    run_id: str = ""  # .harness/runs/<run_id>/ for this run (v0.8.1)
 
     def plan_dict(self) -> dict:
-        return {"steps": [
+        return {"run_id": self.run_id,
+                "steps": [
             {"id": s.id, "instruction": s.instruction, "done_when": s.done_when,
              "status": s.status, "result": s.result[:500],
              "verify": s.verify, "lint": s.lint,
-             "verify_waived": s.verify_waived} for s in self.steps]}
+             "verify_waived": s.verify_waived,
+             "output_path": s.output_path} for s in self.steps]}
 
 
 def _run_step_verified(task: str, step: PlanStep, n_steps: int,
-                     context: list[str], cfg: Config, chat_fn, jail, emit) -> bool:
+                     context: list[str], cfg: Config, chat_fn, jail, emit,
+                     store=None) -> bool:
     """Run one plan step; after the sub-run reports DONE, verify the Then
     clauses in code before advancing. A failed verification warns and retries
     the step once (bounded by cfg.verify_retries) with the exact failure as
@@ -188,11 +197,32 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
     warning: the step is accepted and the plan continues, because the verifier
     checks plan *adherence* while the task-level checker judges *correctness* —
     a wrong plan must not block right work. Verification itself costs zero
-    model calls. Sub-run failures (model errors, limits) still hard-fail."""
+    model calls. Sub-run failures (model errors, limits) still hard-fail.
+
+    v0.8.1 (issue #2): when a RunStore is present, every attempt's full
+    record (tool calls with verbatim results, answer, verification) is
+    written to .harness/runs/<run>/step-NN.md, and the step prompt names
+    the exact prior-step files so the model can read_file the real data
+    instead of working from the 250-char summary alone."""
     from . import verify as _verify
     vctx = _verify.VerifyContext(jail=jail, step_id=step.id, task=task)
     feedback = ""
     last_vres = None
+    attempts: list[dict] = []
+
+    def persist(status: str):
+        if store is None:
+            return
+        try:
+            store.write_step(
+                step_id=step.id, instruction=step.instruction,
+                given=step.given, done_when=step.done_when,
+                answer=step.result, sub_steps=[], status=status,
+                verify_checks=step.verify, verify_waived=step.verify_waived,
+                attempts=attempts or None)
+        except Exception:
+            pass  # the store is a record, never a reason to fail real work
+
     for _ in range(1 + cfg.verify_retries):
         prompt = (f"Overall goal: {task}\n"
                   f"You are executing step {step.id} of {n_steps}. "
@@ -201,6 +231,8 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
             prompt += f"Starting state: {step.given}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
+        if store is not None:
+            prompt += store.prompt_block(step.id)
         if context:
             prompt += ("Results of previous steps (context only, do not redo them):\n"
                        + "\n".join(context) + "\n")
@@ -216,21 +248,30 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
         except Exception as e:
             step.status = "failed"
             step.result = f"harness error: {e}"
+            attempts.append({"sub_steps": [], "answer": step.result,
+                             "verify_checks": []})
+            persist("failed")
             emit("step_failed", step)
             return False
         step.result = (r.answer or "")[:800]
         if r.status != "done":
             step.status = "failed"
+            attempts.append({"sub_steps": list(r.steps), "answer": r.answer or "",
+                             "verify_checks": []})
+            persist("failed")
             emit("step_failed", step)
             return False
         thens = [t.strip() for t in step.done_when.split("\n") if t.strip()]
         vres = _verify.verify_step(thens, vctx)
         step.verify = [{"then": c.then, "verifier": c.verifier,
                         "ok": c.ok, "detail": c.detail} for c in vres.checks]
+        attempts.append({"sub_steps": list(r.steps), "answer": r.answer or "",
+                         "verify_checks": list(step.verify)})
         emit("step_verify", step, vres)
         if vres.ok:
             step.status = "done"
             context.append(f"- Step {step.id}: {step.result[:250]}")
+            persist("done")
             emit("step_done", step)
             return True
         last_vres = vres
@@ -241,6 +282,7 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
     step.status = "done"
     step.verify_waived = True
     context.append(f"- Step {step.id}: {step.result[:250]}")
+    persist("done")
     emit("step_verify_waived", step, last_vres)
     emit("step_done", step)
     return True
@@ -258,11 +300,20 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
         if on_event:
             on_event(kind, *args)
 
+    store = None
+    try:
+        from .runstore import RunStore
+        store = RunStore(cfg.workspace)
+        for s in steps:
+            s.output_path = store.rel_path(s.id)
+    except Exception:
+        store = None  # record-keeping must never block execution
+
     context: list[str] = []
     for step in steps:
         emit("step_start", step)
         if not _run_step_verified(task, step, len(steps), context,
-                                  cfg, chat_fn, jail, emit):
+                                  cfg, chat_fn, jail, emit, store=store):
             break
 
     status = "done" if steps and all(s.status == "done" for s in steps) else "step_failed"
@@ -277,7 +328,8 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
         answer = (msg.get("content") or "").strip() or "(no summary)"
     except Exception as e:
         answer = f"(summary call failed: {e})"
-    return PlannedRun(status, answer, steps)
+    return PlannedRun(status, answer, steps,
+                      run_id=store.run_id if store is not None else "")
 
 
 def run_planned(task: str, cfg: Config, chat_fn=None, on_event=None) -> PlannedRun:

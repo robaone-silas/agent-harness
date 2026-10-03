@@ -269,3 +269,15 @@ and their stored output file. One standing rule rides in the frame:
 if a step's work is based on an earlier step's output, read that
 step's file first. The operative instruction itself stays scoped to
 the current step and sits last in the prompt, where it always did.
+
+And the frame has a gate behind it. A later field run produced a
+one-line placeholder `organization.md`: the run record showed the
+writing step had never read the listing step's stored output at all.
+So when a step answers DONE and no tool call in its sub-run touched
+a prior step's output file, the harness pushes back once, inside the
+same run, naming the exact file: read it and redo the step from its
+real contents. Reading through any tool counts (`read_file`, an
+`exec` cat, anything whose arguments name the path). A second DONE
+is accepted as-is: genuinely independent steps pay one sentence,
+not a block. The loop stays generic about it: `loop.run` accepts a
+`done_gate` hook and the planner supplies the plan-specific check.

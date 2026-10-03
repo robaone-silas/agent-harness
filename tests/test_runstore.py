@@ -179,6 +179,10 @@ def t_planned_run_creates_store():
                                           "arguments": {"path": "suggestion.txt",
                                                         "content": "by type"}}}]},
             {"role": "assistant", "content": "DONE: suggested."},
+            # v0.8.1 grounding gate: step 2 did not read step 1's stored
+            # output, so its first DONE is pushed back once; this second
+            # DONE is the escape-hatch re-assertion.
+            {"role": "assistant", "content": "DONE: suggested (from the listing above)."},
             {"role": "assistant", "content": "DONE: both steps complete."},
         ])
         r = planner.run_planned("organize my documents", cfg, chat_fn=fake)

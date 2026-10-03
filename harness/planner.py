@@ -236,6 +236,38 @@ def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
+    """Build the DONE gate for one step (v0.8.1), or None when the step has
+    no completed prior steps with stored outputs.
+
+    Field failure behind it: a step wrote its deliverable without ever
+    reading the previous step's stored output, and produced a placeholder.
+    The frame advises reading the source; the gate checks it. Any tool call
+    whose arguments name a prior step's output file counts as grounded
+    (read_file, an exec cat, anything). The gate fires once per sub-run;
+    a second DONE is the escape hatch for genuinely independent steps."""
+    priors = [s.output_path for s in steps
+              if s.id < step.id and s.status == "done" and s.output_path]
+    if not priors:
+        return None
+
+    def gate(sub_steps) -> str | None:
+        import json as _json
+        for s in sub_steps:
+            if s.tool and s.args and any(
+                    p in _json.dumps(s.args, default=str) for p in priors):
+                return None
+        return (f"HARNESS: you are finishing step {step.id} without having read "
+                f"the output of the earlier step(s) this plan builds on: "
+                f"{', '.join(priors)}. Those files are the record of what the "
+                f"earlier steps actually produced. Read the file now with "
+                f"read_file and redo this step using its real contents. If this "
+                f"step genuinely does not depend on that output, answer DONE: "
+                f"again and say why in one sentence.")
+
+    return gate
+
+
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                      cfg: Config, chat_fn, jail, emit,
                      store=None) -> bool:
@@ -264,6 +296,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     last_vres = None
     attempts: list[dict] = []
     n_steps = len(steps)
+    gate = _grounding_gate(step, steps)
 
     def persist(status: str):
         if store is None:
@@ -299,7 +332,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         sub_cfg = replace(cfg, max_steps=cfg.step_max_steps)
         try:
             r = loop.run(prompt, sub_cfg, chat_fn=chat_fn,
-                         on_step=lambda s: emit("step_sub", step, s))
+                         on_step=lambda s: emit("step_sub", step, s),
+                         done_gate=gate)
         except Exception as e:
             step.status = "failed"
             step.result = f"harness error: {e}"

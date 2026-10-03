@@ -56,9 +56,12 @@ def _extract_fallback(content: str) -> tuple[str, dict | None]:
     return thought, {"name": data["name"], "arguments": data.get("arguments", {})}
 
 
-def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
+def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None) -> RunResult:
     """Run the agent loop. chat_fn(messages, tools) -> assistant message dict;
-    inject a fake for tests. on_step(step) receives each Step for live display."""
+    inject a fake for tests. on_step(step) receives each Step for live display.
+    done_gate(steps) -> str | None: consulted once before a DONE: is accepted;
+    returning text pushes back with that message instead (the caller decides
+    what "ready to finish" requires — e.g. the planner's grounding gate)."""
     chat_fn = chat_fn or (lambda messages, tool_defs: _client.chat(
         cfg.endpoint, cfg.model, messages,
         tools=_client.to_ollama_tools(tool_defs) if tool_defs else None,
@@ -82,6 +85,7 @@ def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
     # "error", or "nudged" (repeat-after-success nudge, which asks for DONE:).
     last_outcome: str | None = None
     error_pushback_sent = False
+    gate_fired = False
 
     def emit(step: Step):
         result.steps.append(step)
@@ -131,6 +135,20 @@ def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
                     messages.append({"role": "user",
                                      "content": prompts.DONE_AFTER_ERROR_PUSHBACK})
                     continue
+                if done_gate is not None and not gate_fired:
+                    # Caller-supplied readiness check (e.g. grounding: the
+                    # step never read the earlier output it builds on). One
+                    # pushback, then DONE: is accepted regardless — the
+                    # gate advises with teeth, it does not imprison.
+                    try:
+                        pushback = done_gate(list(result.steps))
+                    except Exception:
+                        pushback = None
+                    if pushback:
+                        gate_fired = True
+                        emit(Step(n, content, None, None, None, "nudge"))
+                        messages.append({"role": "user", "content": pushback})
+                        continue
                 emit(Step(n, content, None, None, None, "final"))
                 result.answer = content
                 result.status = "done"

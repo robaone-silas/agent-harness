@@ -118,6 +118,9 @@ def t_planned_run_happy():
          "tool_calls": [{"function": {"name": "exec",
                                       "arguments": {"command": "cat a.txt"}}}]},
         {"role": "assistant", "content": "DONE: output shows x."},
+        # v0.8.1 grounding gate: step 2 never read step 1's stored output,
+        # so the first DONE is pushed back; this re-assertion is the escape.
+        {"role": "assistant", "content": "DONE: output shows x (no dependency)."},
         {"role": "assistant", "content": "DONE: both steps complete."},
     ])
     events = []
@@ -125,7 +128,7 @@ def t_planned_run_happy():
                             on_event=lambda k, *a: events.append(k))
     check("planned status", r.status == "done", r.status)
     check("both steps done", [s.status for s in r.steps] == ["done", "done"])
-    check("sequenced calls", fake.calls["n"] == 6, str(fake.calls["n"]))
+    check("sequenced calls", fake.calls["n"] == 7, str(fake.calls["n"]))
     check("plan event", "plan" in events)
     check("step events", events.count("step_done") == 2)
     check("file written", Path(d, "a.txt").read_text() == "x")

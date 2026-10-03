@@ -84,6 +84,7 @@ class PlanStep:
     instruction: str
     done_when: str
     given: str = ""
+    title: str = ""  # Scenario title from the Gherkin (v0.8.1 plan frame)
     status: str = "pending"  # pending | done | failed
     result: str = ""
     verify: list = field(default_factory=list)  # per-Then check records (v0.7)
@@ -100,6 +101,7 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
             instruction="\n".join(p.when)[:500],
             done_when="\n".join(p.then)[:300],
             given="\n".join(p.given)[:300],
+            title=(p.title or "")[:120],
         ))
     return steps
 
@@ -187,8 +189,55 @@ class PlannedRun:
              "output_path": s.output_path} for s in self.steps]}
 
 
-def _run_step_verified(task: str, step: PlanStep, n_steps: int,
-                     context: list[str], cfg: Config, chat_fn, jail, emit,
+# The plan frame (v0.8.1): every step prompt opens by explaining the
+# situation the executor is in. v0.6 scoped the prompt to the current step
+# only, fearing the model would freelance across steps; three field
+# failures (a lost file list, an evaporated deliverable, an ungrounded
+# write step) were all starvation instead. So the executor now sees the
+# whole plan, its place in it, and where the data lives — while the
+# operative instruction stays scoped and last.
+FRAME_TEXT = (
+    "How this works: this task is a multi-step plan, carried out one step "
+    "at a time in separate runs like this one. Steps marked [done] are "
+    "finished: do not redo them. Their full outputs, tool results "
+    "included, are stored in the files named beside them, and the short "
+    "summaries lose details. Steps marked [pending] run after you, in "
+    "their own runs: do not do them, but they will read your stored "
+    "output, so finish your step completely. If your step's work is based "
+    "on an earlier step's output, read that step's file first with "
+    "read_file instead of working from the summary."
+)
+
+
+def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
+    """The shape of the whole plan, one line per step, with statuses.
+
+    Done steps are annotated with their (short) result and, when the run
+    store is active, the exact file holding their full output."""
+    import re as _re
+    lines = ["The plan:"]
+    for s in steps:
+        if s.id == current_id:
+            mark = "YOUR STEP"
+        elif s.status == "done":
+            mark = "done"
+        else:
+            mark = "pending"
+        title = _re.sub(r"^Step\s+\d+\s*[-:]\s*", "", (s.title or "").strip())
+        label = title or (s.instruction.split("\n")[0][:100] if s.instruction else "")
+        lines.append(f"  Step {s.id} [{mark}] {label}")
+        if s.id != current_id and s.instruction and title:
+            lines.append(f"    When: {s.instruction.split(chr(10))[0][:160]}")
+        if s.status == "done" and s.id != current_id:
+            if s.result:
+                lines.append(f"    Result: {s.result[:200]}")
+            if s.output_path:
+                lines.append(f"    Full output: {s.output_path}")
+    return "\n".join(lines) + "\n"
+
+
+def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
+                     cfg: Config, chat_fn, jail, emit,
                      store=None) -> bool:
     """Run one plan step; after the sub-run reports DONE, verify the Then
     clauses in code before advancing. A failed verification warns and retries
@@ -201,14 +250,20 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
 
     v0.8.1 (issue #2): when a RunStore is present, every attempt's full
     record (tool calls with verbatim results, answer, verification) is
-    written to .harness/runs/<run>/step-NN.md, and the step prompt names
-    the exact prior-step files so the model can read_file the real data
-    instead of working from the 250-char summary alone."""
+    written to .harness/runs/<run>/step-NN.md.
+
+    v0.8.1 (plan frame): the prompt leads with FRAME_TEXT and the plan
+    outline (every step, its status, done steps' output files), then
+    repeats the current step as the operative block at the end. The
+    outline replaces both the old 250-char context list and the store's
+    separate path block: summaries and paths now ride with the step they
+    describe."""
     from . import verify as _verify
     vctx = _verify.VerifyContext(jail=jail, step_id=step.id, task=task)
     feedback = ""
     last_vres = None
     attempts: list[dict] = []
+    n_steps = len(steps)
 
     def persist(status: str):
         if store is None:
@@ -226,16 +281,16 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
     for _ in range(1 + cfg.verify_retries):
         prompt = (f"Overall goal: {task}\n"
                   f"You are executing step {step.id} of {n_steps}. "
-                  f"Do ONLY this step, nothing else.\n")
+                  f"Do ONLY this step, nothing else.\n\n")
+        prompt += FRAME_TEXT + "\n\n"
+        prompt += _plan_outline(steps, step.id) + "\n"
         if step.given:
             prompt += f"Starting state: {step.given}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
-        if store is not None:
-            prompt += store.prompt_block(step.id)
-        if context:
-            prompt += ("Results of previous steps (context only, do not redo them):\n"
-                       + "\n".join(context) + "\n")
+        if store is not None and step.output_path:
+            prompt += (f"Your full output will be stored at {step.output_path} "
+                       f"for later steps.\n")
         if feedback:
             prompt += (f"Your previous attempt failed verification: {feedback} "
                        f"Fix exactly this and try again.\n")
@@ -270,7 +325,6 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
         emit("step_verify", step, vres)
         if vres.ok:
             step.status = "done"
-            context.append(f"- Step {step.id}: {step.result[:250]}")
             persist("done")
             emit("step_done", step)
             return True
@@ -281,7 +335,6 @@ def _run_step_verified(task: str, step: PlanStep, n_steps: int,
     # wrong work) — the task-level checker remains the backstop.
     step.status = "done"
     step.verify_waived = True
-    context.append(f"- Step {step.id}: {step.result[:250]}")
     persist("done")
     emit("step_verify_waived", step, last_vres)
     emit("step_done", step)
@@ -309,10 +362,9 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
     except Exception:
         store = None  # record-keeping must never block execution
 
-    context: list[str] = []
     for step in steps:
         emit("step_start", step)
-        if not _run_step_verified(task, step, len(steps), context,
+        if not _run_step_verified(task, step, steps,
                                   cfg, chat_fn, jail, emit, store=store):
             break
 

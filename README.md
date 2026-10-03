@@ -257,3 +257,15 @@ Entries return as workspace-relative paths, folders with a trailing
 announced, and symlinked folders are listed but never followed, so
 the walk cannot leave the jail. The `.harness/` records folder is not
 listed: it is bookkeeping, not user data.
+
+Same release, the plan frame: the executor prompt used to show only
+the current step, a v0.6 scoping decision made when the fear was a
+small model freelancing across steps. The field failures ran the
+other way: steps starved for context. Each step prompt now opens with
+a short frame explaining that this is one step of a multi-step plan,
+followed by the outline of the whole plan: every step with its status
+(done, your step, pending), done steps annotated with their result
+and their stored output file. One standing rule rides in the frame:
+if a step's work is based on an earlier step's output, read that
+step's file first. The operative instruction itself stays scoped to
+the current step and sits last in the prompt, where it always did.

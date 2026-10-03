@@ -71,24 +71,6 @@ class RunStore:
         """Exact relative paths of all step files before step_id."""
         return [self.rel_path(i) for i in range(1, step_id)]
 
-    def prompt_block(self, step_id: int) -> str:
-        """The prompt lines naming prior step files (empty for step 1).
-
-        This is the access half of the design: the model is told exactly
-        where the verbatim data lives and to read_file it when it needs
-        exact data, instead of relying on the short summary."""
-        priors = self.prior_paths(step_id)
-        if not priors:
-            return ""
-        lines = ["Full outputs of previous steps are stored in files. "
-                 "The short summaries below lose details: when you need exact "
-                 "data from an earlier step (a file list, command output, a "
-                 "computed value), use read_file on that step's file instead "
-                 "of guessing from the summary:"]
-        for i, rel in enumerate(priors, 1):
-            lines.append(f"- Step {i} full output: {rel}")
-        return "\n".join(lines) + "\n"
-
     def write_step(self, step_id: int, instruction: str, given: str,
                    done_when: str, answer: str, sub_steps: list,
                    status: str, verify_checks: list | None = None,

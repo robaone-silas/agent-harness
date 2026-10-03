@@ -7,7 +7,9 @@ Then or an unresolvable <placeholder> is rejected at plan time and never run.
 (The e4b lesson: don't execute what you can't parse.)
 
 Subset supported: Feature:, Scenario: (one per plan step, in order),
-Given/When/Then with And/But continuations, # comments, blank lines.
+Given/When/Then with And/But continuations, an optional Intent: line per
+Scenario (the step's purpose in the task's own terms, preserved as data
+so decomposition cannot silently dissolve it), # comments, blank lines.
 """
 from __future__ import annotations
 
@@ -24,6 +26,7 @@ class ParsedStep:
     given: list[str] = field(default_factory=list)
     when: list[str] = field(default_factory=list)
     then: list[str] = field(default_factory=list)
+    intent: str = ""  # optional Intent: line (v0.8.1 intent preservation)
 
 
 @dataclass
@@ -38,6 +41,8 @@ def render_feature(title: str, steps: list[ParsedStep]) -> str:
     for i, s in enumerate(steps, 1):
         name = s.title.strip() or f"Step {i}"
         lines.append(f"  Scenario: {name}")
+        if s.intent:
+            lines.append(f"    Intent: {s.intent}")
         for g in s.given:
             lines.append(f"    Given {g}")
         for w in s.when:
@@ -76,6 +81,23 @@ def parse_feature(text: str) -> tuple[FeaturePlan | None, str]:
             current = ParsedStep(title=rest or f"Step {len(scenarios) + 1}")
             scenarios.append(current)
             last_kw = None
+            continue
+        m = re.match(r"^Intent\s*:\s*(.*)$", line, re.IGNORECASE)
+        if m:
+            if current is None:
+                return None, f"line {lineno}: Intent outside any Scenario"
+            body = m.group(1).strip()
+            if not body:
+                return None, f"line {lineno}: empty Intent step"
+            if current.intent:
+                return None, (f"line {lineno}: duplicate Intent in one "
+                              "Scenario — one step, one purpose")
+            ph = PLACEHOLDER_RE.search(body)
+            if ph:
+                return None, (f"line {lineno}: unresolvable placeholder "
+                              f"{ph.group(0)} — every step must name concrete "
+                              "files, commands, and values")
+            current.intent = body
             continue
         m = re.match(r"^(Given|When|Then|And|But)\b\s*(.*)$", line, re.IGNORECASE)
         if not m:

@@ -433,3 +433,25 @@ small thing in `append_file`: the file ends with a line break after
 each append (one is added when the content lacks it), because the
 proof run's entries ran together on single lines when the model
 forgot its trailing newlines.
+
+Finally, intent preservation. The index task asked for "every file
+with its name and a one-line description of what it actually
+contains"; the plan decomposed that into "add the content" and the
+finished index held raw file dumps, four of six entries with no
+filename at all. Diagnosis: the planner prompt defined a good step
+only mechanically (concrete action, checkable Then), its
+verifiability pressure trades a description (unverifiable in code
+by nature) for containment of the content, and a property of the
+whole document has no home once the plan is tiled into steps. So
+intent is data now, not advice: a scenario may carry one `Intent:`
+line, the step's purpose in the task's own terms, parsed and
+rendered like any other plan element, rejected when empty,
+duplicated, or placeholder-bearing. The planner prompt requires it
+whenever the task specifies what a deliverable must contain or be
+like ("a description is not the content"), a third exemplar models
+a task with a qualitative spec surviving decomposition, the
+executor's step prompt states the intent directly above the
+instruction it frames, and a new lint warning, `intent_drift`,
+flags a plan at approval time when the task's spec words
+(description, summary, caption, one-line, one-sentence) survive in
+no step at all.

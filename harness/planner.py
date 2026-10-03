@@ -96,6 +96,17 @@ Feature: Archive meeting notes
     When I run: mv notes-2025-03.txt archive/
     Then "archive/notes-2025-03.txt" exists
 
+Task: Make a reading guide to the articles in this folder: each entry gives the article's title and a one-sentence summary of its argument
+Feature: Reading guide
+  Scenario: Step 1 - List the articles
+    Intent: know exactly which articles the guide must cover
+    When I list the files in the folder
+    Then the output lists the article files
+  Scenario: Step 2 - Write the guide
+    Intent: each entry gives the article's title and a one-sentence summary of its argument, not the article text
+    When I read each article from step 1 and write guide.md with one entry per article
+    Then "guide.md" covers the files from step 1
+
 """
 
 
@@ -116,6 +127,7 @@ Write the plan in Gherkin — one Scenario per step, in order.
 Format:
 Feature: <short title for this task>
   Scenario: Step 1 - <short name>
+    Intent <what this step is for, in the task's terms — see the intent rule below>
     When <one concrete action naming exact files or commands>
     Then <how to tell the step worked, checkable in files or command output>
   Scenario: Step 2 - <short name>
@@ -135,6 +147,13 @@ Rules:
   (a summary, strategy, report, or index of those files), write its Then as
   `"out.txt" covers the files from step N` (N = the listing step) — the
   harness checks the document actually mentions the source files.
+- Preserve the task's intent in every step. When the task specifies what a
+  deliverable must contain or be like (for example: each entry gives a name
+  and a one-line description), give every step that contributes to that
+  deliverable an Intent line carrying the task's own words for it, and write
+  its When to match the Intent: a description is not the content, and a
+  summary is not the source text. Decomposition that drops the task's
+  specification produces work that is finished and wrong.
 - The Then must accurately describe THIS step's expected outcome. A precisely
   worded wrong expectation fails verification just as surely as a vague one.
 - Concrete values come from the task statement only — never <angle-bracket
@@ -169,6 +188,7 @@ class PlanStep:
     done_when: str
     given: str = ""
     title: str = ""  # Scenario title from the Gherkin (v0.8.1 plan frame)
+    intent: str = ""  # the step's Intent: line (v0.8.1 intent preservation)
     status: str = "pending"  # pending | done | failed
     result: str = ""
     verify: list = field(default_factory=list)  # per-Then check records (v0.7)
@@ -188,6 +208,7 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
             done_when="\n".join(p.then)[:300],
             given="\n".join(p.given)[:300],
             title=(p.title or "")[:120],
+            intent=(p.intent or "")[:300],
         ))
     return steps
 
@@ -390,6 +411,7 @@ class PlannedRun:
         return {"run_id": self.run_id,
                 "steps": [
             {"id": s.id, "instruction": s.instruction, "done_when": s.done_when,
+             "intent": s.intent,
              "status": s.status, "result": s.result[:500],
              "verify": s.verify, "lint": s.lint,
              "verify_waived": s.verify_waived,
@@ -572,6 +594,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         prompt += _plan_outline(steps, step.id) + "\n"
         if step.given:
             prompt += f"Starting state: {step.given}\n"
+        if step.intent:
+            prompt += f"Intent of this step: {step.intent}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
         if store is not None and step.output_path:

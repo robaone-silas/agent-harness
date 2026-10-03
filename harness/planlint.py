@@ -20,6 +20,11 @@ Checks:
   unparseable_check  (WARN): a Then reads like a check ("contains exactly",
                      "should exist", ...) but matches no verifier, so the
                      harness will take it on trust.
+  intent_drift       (WARN): the task's outcome words (description,
+                     summary, caption, one-line, ...) survive in no step's
+                     Intent, When, or Then — decomposition may have
+                     silently traded the task's intent for mechanics
+                     (field: "a one-line description" became "the content").
 """
 from __future__ import annotations
 
@@ -101,6 +106,33 @@ def _move_destinations(text: str) -> set[str]:
     return out
 
 
+# Words that carry a task's qualitative specification of its deliverable.
+# If the task uses one and no step does, the spec likely died in
+# decomposition (intent_drift). Stems, matched case-insensitively.
+_SPEC_STEMS = ("descri", "summar", "caption", "one-line", "one-sentence")
+
+
+def _intent_drift(task: str, steps: list) -> LintFinding | None:
+    task_low = (task or "").lower()
+    plan_low = "\n".join(
+        " ".join([getattr(s, "intent", "") or "", s.instruction or "",
+                  s.done_when or "", s.given or "",
+                  getattr(s, "title", "") or ""])
+        for s in steps).lower()
+    missing = []
+    for stem in _SPEC_STEMS:
+        if stem in task_low and stem not in plan_low:
+            m = re.search(r"[\w-]*" + re.escape(stem) + r"[\w-]*", task_low)
+            missing.append(m.group(0) if m else stem)
+    if not missing or not steps:
+        return None
+    return LintFinding(
+        steps[-1].id, "warn", "intent_drift",
+        f"Plan: the task asks for {', '.join(missing)}, but no step's "
+        f"Intent, When, or Then mentions it — the task's intent may "
+        f"have been lost in decomposition.")
+
+
 def lint_plan(task: str, steps: list) -> list[LintFinding]:
     """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when)."""
     findings: list[LintFinding] = []
@@ -135,4 +167,7 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
                         f"Step {s.id}: Then asserts exact value '{v[:60]}', "
                         f"which appears nowhere in the task or prior steps — "
                         f"computed or invented?"))
+    drift = _intent_drift(task, steps)
+    if drift is not None:
+        findings.append(drift)
     return findings

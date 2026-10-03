@@ -477,7 +477,7 @@ def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
     return "\n".join(lines) + "\n"
 
 
-def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
+def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     """Build the DONE gate for one step (v0.8.1), or None when the step has
     no completed prior steps with stored outputs.
 
@@ -486,7 +486,17 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
     The frame advises reading the source; the gate checks it. Any tool call
     whose arguments name a prior step's output file counts as grounded
     (read_file, an exec cat, anything). The gate fires once per sub-run;
-    a second DONE is the escape hatch for genuinely independent steps."""
+    a second DONE is the escape hatch for genuinely independent steps.
+
+    verify_now (the surgical fix, 2026-10-03): stage 2 used to fire blind,
+    ordering a redo of a deliverable verification had never examined; in
+    the field that redo briefly overwrote a good index with a worse one.
+    When verify_now is supplied, stage 2 first runs the step's own Thens
+    against the workspace: if they pass on content-bearing checks
+    (contains, covers, and kin; a bare exists proves nothing, the
+    founding stub passed it), the suspicion is answered and the gate
+    stays silent. An attested or failing Then keeps the pushback
+    exactly as before."""
     priors = [s.output_path for s in steps
               if s.id < step.id and s.status == "done" and s.output_path]
     if not priors:
@@ -515,6 +525,15 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
                     f"so do not try to read it.")
         if any(s.tool and not names_prior(s) for s in sub_steps[read_idx + 1:]):
             return None  # real work happened after the read: grounded
+        # Before demanding the redo, look at the deliverable (surgical
+        # fix): if the step's own Thens all machine-check as passing
+        # right now, a redo can only risk making things worse.
+        if verify_now is not None:
+            try:
+                if verify_now():
+                    return None
+            except Exception:
+                pass  # a broken check suppresses nothing
         # Stage 2 (the 20261002-192409 field sequence): the source was read,
         # possibly only because stage 1 forced it, and then DONE was
         # re-asserted with nothing changed. Reading is not redoing.
@@ -560,7 +579,29 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     last_vres = None
     attempts: list[dict] = []
     n_steps = len(steps)
-    gate = _grounding_gate(step, steps)
+    thens = [t.strip() for t in step.done_when.split("\n") if t.strip()]
+
+    def verify_now() -> bool:
+        """True only when the step's Thens machine-check as passing right
+        now AND at least one passing check is content-bearing.
+
+        Attested clauses are not evidence, and neither is a bare
+        existence pass: the stub that founded stage 2 satisfied
+        `"file" exists` while promising its content "to be filled in".
+        The checks that answer stage 2's suspicion measure content:
+        contains, contains_exactly, covers (against the source items),
+        has_lines. See _grounding_gate."""
+        if not thens:
+            return False
+        res = _verify.verify_step(thens, vctx)
+        if not res.checks or not all(
+                c.ok and c.verifier != "attest" for c in res.checks):
+            return False
+        return any(c.verifier in ("contains", "contains_exactly",
+                                  "covers", "has_lines")
+                   for c in res.checks)
+
+    gate = _grounding_gate(step, steps, verify_now=verify_now)
 
     def persist(status: str):
         if attempts:
@@ -636,7 +677,6 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             emit("step_failed", step)
             return False
         step.source_items = _verify.collect_step_items(list(r.steps))
-        thens = [t.strip() for t in step.done_when.split("\n") if t.strip()]
         vres = _verify.verify_step(thens, vctx)
         step.verify = [{"then": c.then, "verifier": c.verifier,
                         "ok": c.ok, "detail": c.detail} for c in vres.checks]

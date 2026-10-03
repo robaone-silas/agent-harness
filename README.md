@@ -455,3 +455,23 @@ instruction it frames, and a new lint warning, `intent_drift`,
 flags a plan at approval time when the task's spec words
 (description, summary, caption, one-line, one-sentence) survive in
 no step at all.
+
+The day's last fix is surgical, aimed at the grounding gate's own
+bluntness. In the intent run, step 2 wrote a good index on its first
+attempt; the gate's stage 2 ("you read it but changed nothing")
+ordered a redo, and the redo briefly overwrote the good index with
+a worse one copied from another step's draft. Stage 2 fired blind:
+it demanded rework before verification had ever examined the
+deliverable it suspected. Now, at the moment stage 2 would fire,
+the harness runs the step's own `Then` clauses against the
+workspace, and if they pass on content-bearing checks (`contains`,
+`contains_exactly`, `covers`, `has_lines`), the suspicion is
+answered and the gate stays silent. Two refinements keep it honest:
+an attested `Then` is no evidence, so on trust the pushback stands
+as before; and a bare `exists` pass proves nothing either, since
+the deferral stub that founded stage 2 satisfied `exists` while
+promising its content later — the older field-sequence tests
+refused to let that case go, and they were right. The general
+companion (snapshot each attempt's targets, restore the best
+verified state when a later attempt ends worse) is designed and
+deferred, not built.

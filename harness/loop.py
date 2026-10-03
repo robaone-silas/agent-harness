@@ -65,7 +65,14 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
     what "ready to finish" requires — e.g. the planner's grounding gate).
     only_tools: optional allowlist of tool names (v0.8.1 Tier 2 discovery
     runs read-only: the registry itself is restricted, so a step cannot
-    write even if its instructions say to)."""
+    write even if its instructions say to).
+
+    Budget accounting (v0.8.1): cfg.max_steps bounds the model's own
+    turns. The harness's capped pushbacks (the done_gate, at most 2, and
+    the DONE-after-error pushback, at most 1) each refund the turn they
+    consumed: three live plan steps died with their work done because
+    supervision spent their budgets. Everything else counts as before,
+    including the uncapped narration nudge, so refunds cannot loop."""
     chat_fn = chat_fn or (lambda messages, tool_defs: _client.chat(
         cfg.endpoint, cfg.model, messages,
         tools=_client.to_ollama_tools(tool_defs) if tool_defs else None,
@@ -98,7 +105,11 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
         if on_step:
             on_step(step)
 
-    for n in range(1, cfg.max_steps + 1):
+    n = 0
+    pushbacks = 0  # capped harness pushbacks fired; each refunds its turn
+    hit_error_limit = False
+    while n < cfg.max_steps + pushbacks:
+        n += 1
         try:
             msg = chat_fn(messages, tool_defs)
         except Exception as e:  # model/transport failure ends the run
@@ -137,6 +148,7 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
                     # (e.g. a plan referencing a file that doesn't exist).
                     # Push back once and demand engagement with the error.
                     error_pushback_sent = True
+                    pushbacks += 1  # harness turn, not model work: refund it
                     emit(Step(n, content, None, None, None, "nudge"))
                     messages.append({"role": "user",
                                      "content": prompts.DONE_AFTER_ERROR_PUSHBACK})
@@ -153,6 +165,7 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
                         pushback = None
                     if pushback:
                         gate_fires += 1
+                        pushbacks += 1  # harness turn, not model work: refund it
                         emit(Step(n, content, None, None, None, "nudge"))
                         messages.append({"role": "user", "content": pushback})
                         continue
@@ -231,8 +244,11 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
 
         if errors >= cfg.max_consecutive_errors:
             result.status = "error_limit"
+            hit_error_limit = True
             break
-    else:
+    if not hit_error_limit:
+        # The budget ran out (the model's own turns plus any refunded
+        # pushback turns): the run ends as a step-limit failure.
         result.status = "max_steps"
 
     # One final call so the run ends with a human-readable summary, not a trace.

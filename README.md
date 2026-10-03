@@ -413,3 +413,23 @@ planner's shape was not wrong in intent, only unarmed: plans say
 and parent folders when missing, jailed like the rest), so an
 accumulating file survives the steps that build it. It is not in
 the read-only set, so discovery cannot use it.
+
+The live proof of `append_file` closed one gap and exposed the
+day's last lesson. The model chose the new verb unsteered, on the
+first working turn of every step that needed it, and accumulation
+held. The per-file plan still died, at step 3 of 6, its append
+already landed: of the step's six turns, two were work and the rest
+were the grounding gate's pushbacks, its compliance read, and a
+redundant re-read. It was the third live death with that signature
+(the organize plan's step 3 and index run 1's step 2 before it): a
+step failed for exhausting a budget that harness process had spent.
+So the accounting changed: `max_steps` now bounds the model's own
+turns, and the harness's capped pushbacks (the gate, at most two;
+the DONE-after-error pushback, at most one) each refund the turn
+they consumed, so supervision is not charged to the supervised.
+Everything else still counts, including the uncapped narration
+nudge, so refunds cannot loop. The same change guarantees one
+small thing in `append_file`: the file ends with a line break after
+each append (one is added when the content lacks it), because the
+proof run's entries ran together on single lines when the model
+forgot its trailing newlines.

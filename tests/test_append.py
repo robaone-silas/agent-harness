@@ -7,8 +7,12 @@ no verb for adding. write_file replaces the whole file, so step 2's
 "add" silently destroyed step 1's entry; the finished index held one
 entry of six and no check could see the loss. The gap was vocabulary:
 plans say add, the tools could only replace. append_file appends
-exactly the content given (creating the file, and parent folders, when
-missing), so an accumulating file survives the steps that build it.
+the content given (creating the file, and parent folders, when
+missing) and guarantees the result ends with a line break, one added
+if the content lacks it: verbatim append trusted the caller for line
+breaks, and the live proof (index run 3) showed the small model does
+not reliably supply them, so entries ran together on one line. An
+accumulating file survives the steps that build it, entry per line.
 
 Run: python3 tests/test_append.py
 """
@@ -62,13 +66,29 @@ def t_append_preserves_what_is_there():
         shutil.rmtree(d)
 
 
-def t_append_is_verbatim_no_magic_separator():
+def t_append_adds_no_separator_only_a_final_newline():
     reg, d = make_registry()
     try:
         reg["write_file"]["func"]({"path": "x.txt", "content": "abc"})
         reg["append_file"]["func"]({"path": "x.txt", "content": "def"})
-        check("no separator inserted", Path(d, "x.txt").read_text() == "abcdef",
+        check("no separator inserted, final newline guaranteed",
+              Path(d, "x.txt").read_text() == "abcdef\n",
               repr(Path(d, "x.txt").read_text()))
+    finally:
+        shutil.rmtree(d)
+
+
+def t_append_ensures_trailing_newline_without_doubling():
+    reg, d = make_registry()
+    try:
+        reg["append_file"]["func"]({"path": "log.txt", "content": "entry one"})
+        check("missing newline supplied",
+              Path(d, "log.txt").read_text() == "entry one\n",
+              repr(Path(d, "log.txt").read_text()))
+        reg["append_file"]["func"]({"path": "log.txt", "content": "entry two\n"})
+        check("existing newline not doubled",
+              Path(d, "log.txt").read_text() == "entry one\nentry two\n",
+              repr(Path(d, "log.txt").read_text()))
     finally:
         shutil.rmtree(d)
 
@@ -148,7 +168,8 @@ def t_append_through_the_loop_accumulates():
 
 if __name__ == "__main__":
     for fn in [t_append_creates_a_missing_file, t_append_preserves_what_is_there,
-               t_append_is_verbatim_no_magic_separator,
+               t_append_adds_no_separator_only_a_final_newline,
+               t_append_ensures_trailing_newline_without_doubling,
                t_append_creates_parent_folders, t_append_is_jailed,
                t_append_registered_and_described_for_the_model,
                t_append_is_not_a_discovery_tool,

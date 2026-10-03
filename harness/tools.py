@@ -75,11 +75,16 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         # v0.8.1: plans say "add it to <file>", and until now the toolset
         # had no verb for adding: write_file replaces the whole file, so a
         # step "adding" its entry silently destroyed earlier steps'
-        # entries (index task, run 1, 2026-10-03). Append is verbatim: no
-        # separator magic, the caller owns its line breaks.
+        # entries (index task, run 1, 2026-10-03). No separator is ever
+        # inserted; the one normalization is a trailing line break, added
+        # when the content lacks it, because the live proof showed the
+        # model does not reliably end its entries with one and separate
+        # steps' entries ran together on a single line.
         p = jail.resolve(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         created = not p.is_file()
+        if content and not content.endswith("\n"):
+            content = content + "\n"
         with p.open("a") as f:
             f.write(content)
         note = " (created the file)" if created else ""
@@ -212,8 +217,9 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
          "not exist. Use this when adding to a file that already has content, "
          "such as an index, a list, or a log: unlike write_file, which replaces "
          "the whole file, append_file keeps everything already there. The "
-         "content is added exactly as given, so include any line breaks you "
-         "want at the start or end of your content.",
+         "content is added as given, with one guarantee: the file ends with a "
+         "line break after your content (one is added if yours lacks it), so "
+         "entries added by different steps never run together on one line.",
          "parameters": {"type": "object",
                         "properties": {
                             "path": {"type": "string"},

@@ -37,9 +37,9 @@ whether the model's native function calling is actually engaging.
 
 ## Design: why a 2B model gets this shape
 
-- **Five tools, one call per turn.** Small models get confused by wide tool
+- **Few tools, one call per turn.** Small models get confused by wide tool
   surfaces and parallel calls. `exec`, `read_file`, `write_file`,
-  `edit_file`, `list_dir` — plus `grep_files`, which moves the
+  `append_file`, `edit_file`, `list_dir` — plus `grep_files`, which moves the
   list-and-scan loop into code so the model never handles filenames it
   hasn't seen (it can't hallucinate what it can't invent).
 - **Native tool calling first, text fallback second.** The harness sends
@@ -398,3 +398,18 @@ target before its DONE was accepted); and when the planner phrases
 moves as prose ("I move X into Y/") rather than `mv` commands, the
 lint's destination computation does not see them and `dangling_file`
 fires, the same literalism the `mv` fix addressed for commands.
+
+Last, the `append_file` tool, from the index exercise that closed
+the day. Asked to build `index.md` from six small files, the
+planner decomposed per file ("add it to index.md", six steps, every
+`Then` on trust), and the run collapsed: a step's `write_file`
+"add" replaced the whole file and silently destroyed the previous
+step's entry, and the plan died two steps in with one entry of six
+in place. A hand-written list-then-compile plan carrying `covers`
+completed, and covers fired live for the first time. But the
+planner's shape was not wrong in intent, only unarmed: plans say
+"add", and the toolset had no verb for adding, only replacing.
+`append_file` appends exactly the content given (creating the file
+and parent folders when missing, jailed like the rest), so an
+accumulating file survives the steps that build it. It is not in
+the read-only set, so discovery cannot use it.

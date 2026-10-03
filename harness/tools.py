@@ -1,4 +1,4 @@
-"""Tool registry. Five small tools, all jailed to a workspace root.
+"""Tool registry. Small, sharply-defined tools, all jailed to a workspace root.
 
 Small models do better with few, sharply-defined tools. Each tool has a
 JSON-schema parameter spec so the model sees exact expectations, and the
@@ -70,6 +70,20 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return f"wrote {len(content)} bytes to {path}"
+
+    def t_append_file(path: str, content: str) -> str:
+        # v0.8.1: plans say "add it to <file>", and until now the toolset
+        # had no verb for adding: write_file replaces the whole file, so a
+        # step "adding" its entry silently destroyed earlier steps'
+        # entries (index task, run 1, 2026-10-03). Append is verbatim: no
+        # separator magic, the caller owns its line breaks.
+        p = jail.resolve(path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        created = not p.is_file()
+        with p.open("a") as f:
+            f.write(content)
+        note = " (created the file)" if created else ""
+        return f"appended {len(content)} bytes to {path}{note}"
 
     def t_edit_file(path: str, old_text: str, new_text: str) -> str:
         p = jail.resolve(path)
@@ -193,6 +207,19 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
                             "content": {"type": "string"}},
                         "required": ["path", "content"]},
          "func": lambda a: t_write_file(a["path"], a["content"])},
+        {"name": "append_file", "description":
+         "Append content to the end of a text file, creating the file if it does "
+         "not exist. Use this when adding to a file that already has content, "
+         "such as an index, a list, or a log: unlike write_file, which replaces "
+         "the whole file, append_file keeps everything already there. The "
+         "content is added exactly as given, so include any line breaks you "
+         "want at the start or end of your content.",
+         "parameters": {"type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "content": {"type": "string"}},
+                        "required": ["path", "content"]},
+         "func": lambda a: t_append_file(a["path"], a["content"])},
         {"name": "edit_file", "description":
          "Replace the first occurrence of old_text with new_text in a file.",
          "parameters": {"type": "object",

@@ -340,6 +340,40 @@ def t_step1_has_no_gate():
         shutil.rmtree(d)
 
 
+def t_gate_texts_warn_against_reading_own_step_file():
+    # Field failure #4 (2026-10-03): pushed to read a prior step's record,
+    # the model read its OWN step's record instead (.harness/runs/.../
+    # step-03.md), which does not exist until the step finishes. The read
+    # errored, the DONE-after-error pushback fired, the model retried the
+    # same read into the repeat breaker, and the turn budget ran out: the
+    # step failed with its work already done on disk. Both gate stages
+    # direct the model at files, so both must say plainly that the step's
+    # own output file is written afterwards, does not exist yet, and is
+    # not a source to read.
+    done1 = planner.PlanStep(id=1, instruction="List files",
+                             done_when="the list is recorded", status="done",
+                             output_path=".harness/runs/X/step-01.md")
+    cur = planner.PlanStep(id=2, instruction="Write summary.txt",
+                           done_when='"summary.txt" exists',
+                           output_path=".harness/runs/X/step-02.md")
+    gate = planner._grounding_gate(cur, [done1, cur])
+    check("gate built for a step with priors", gate is not None)
+    stage1 = gate([])
+    low1 = (stage1 or "").lower()
+    check("stage 1 warns about the step's own file",
+          "your own step" in low1 and "does not exist yet" in low1,
+          stage1 or "")
+    read = loop.Step(n=1, thought="", tool="read_file",
+                     args={"path": ".harness/runs/X/step-01.md"},
+                     result="contents", path="native")
+    stage2 = gate([read])
+    check("stage 2 fires after a bare read", stage2 is not None)
+    low2 = (stage2 or "").lower()
+    check("stage 2 warns about the step's own file",
+          "your own step" in low2 and "does not exist yet" in low2,
+          stage2 or "")
+
+
 if __name__ == "__main__":
     for fn in [t_gate_blocks_first_done_then_accepts, t_gate_capped_at_two_pushbacks,
                t_no_gate_no_change,
@@ -347,6 +381,7 @@ if __name__ == "__main__":
                t_step2_that_reads_first_gets_no_pushback,
                t_step2_reading_via_exec_cat_counts_as_grounded,
                t_gate_second_stage_read_but_changed_nothing,
-               t_step1_has_no_gate]:
+               t_step1_has_no_gate,
+               t_gate_texts_warn_against_reading_own_step_file]:
         fn()
     print("\nAll grounding gate tests passed.")

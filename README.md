@@ -320,7 +320,16 @@ task now comes back on the args namespace where `run.py` reads it.
 And the step prompt's stored-at line ("Your full output will be
 stored at...") read as a write instruction to the model, which duly
 wrote its deliverable into its own record file; the line now says the
-harness does the storing and the model should not write there.
+harness does the storing and the model should not write there. A
+sequel from the same day's plan execution sharpened it further: a
+step pushed by the grounding gate to read a prior step's record read
+its OWN step's record path instead, a file that does not exist until
+the step finishes; the read errored, the error pushback and the
+repeat-call breaker spent the step's remaining turns, and the step
+failed with its work already done on disk. The frame, the stored-at
+line, and both gate messages now say plainly that a step's own output
+file is written by the harness after the step finishes, does not
+exist yet, and is not a source to read.
 
 Last, Tier 1 discovery: planning no longer starts blind. The bare
 prompt "organize files in this folder by category" produced a plan

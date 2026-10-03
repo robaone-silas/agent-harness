@@ -412,7 +412,9 @@ FRAME_TEXT = (
     "their own runs: do not do them, but they will read your stored "
     "output, so finish your step completely. If your step's work is based "
     "on an earlier step's output, read that step's file first with "
-    "read_file instead of working from the summary."
+    "read_file instead of working from the summary. Your own step's "
+    "output file is different: the harness writes it after you finish, "
+    "it does not exist yet, and it is not a source. Do not try to read it."
 )
 
 
@@ -485,7 +487,10 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
                     f"earlier steps actually produced. Read the file now with "
                     f"read_file and redo this step using its real contents. If this "
                     f"step genuinely does not depend on that output, answer DONE: "
-                    f"again and say why in one sentence.")
+                    f"again and say why in one sentence. Your own step's output "
+                    f"file ({step.output_path}) is not one of these sources: the "
+                    f"harness writes it after you finish, it does not exist yet, "
+                    f"so do not try to read it.")
         if any(s.tool and not names_prior(s) for s in sub_steps[read_idx + 1:]):
             return None  # real work happened after the read: grounded
         # Stage 2 (the 20261002-192409 field sequence): the source was read,
@@ -495,7 +500,10 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
                 f"anything since reading it. Redo this step now using what the "
                 f"file contains: write or edit the deliverable from its real "
                 f"contents. If nothing genuinely needs to change, answer DONE: "
-                f"again and say why in one sentence.")
+                f"again and say why in one sentence. Your own step's output "
+                f"file ({step.output_path}) is written by the harness after "
+                f"you finish and does not exist yet; it is not a source to "
+                f"read.")
 
     return gate
 
@@ -572,8 +580,11 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             # deliverable into its own record file. Say who does the storing.
             prompt += (f"The harness will store your full output at "
                        f"{step.output_path} for later steps. Do not write to "
-                       f"that file yourself; the harness writes it after you "
-                       f"finish.\n")
+                       f"that file yourself, and do not try to read it: it "
+                       f"does not exist yet. The harness writes it after you "
+                       f"finish. The files you can read are the earlier "
+                       f"steps' outputs, named beside the [done] steps "
+                       f"above.\n")
         if feedback:
             prompt += (f"Your previous attempt failed verification: {feedback} "
                        f"Fix exactly this and try again.\n")

@@ -11,7 +11,10 @@
    <path> for later steps") reads as a write instruction to a small model:
    in the live run, step 2 wrote its strategy into its own record file.
    The line must say the harness does the storing, and that the model
-   should not write there.
+   should not write there. Sequel, same day: a step pushed to read a
+   prior step's record read its OWN record path instead, which does not
+   exist until the step finishes; the line must also say the file does
+   not exist yet and must not be read.
 
 Run: python3 tests/test_papercuts.py
 """
@@ -119,6 +122,10 @@ def t_stored_at_line_is_not_a_write_instruction():
               "harness will store" in joined.lower(), joined[:800])
         check("line says do not write there",
               "do not write" in joined.lower(), joined[:800])
+        check("prompt says the step's own output file does not exist yet",
+              "does not exist yet" in joined.lower(), joined[:800])
+        check("prompt says do not try to read the step's own output file",
+              "do not try to read it" in joined.lower(), joined[:800])
     finally:
         shutil.rmtree(d)
 

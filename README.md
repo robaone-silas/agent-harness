@@ -354,12 +354,18 @@ not the content", with content deliberately unlike real tasks.
 Rerunning the bare prompt: folders created as folders with `exists`
 checks, real `mv` steps each verified by their destination path,
 one category per actual file; ten of thirteen Thens check
-themselves. Two findings came with the win: plan lint's
-`dangling_file` does not credit an `mv` step with creating its
-destination path, so it errored on the very shape the example
-teaches (and, for the wrong reason, flagged one real gap: no step
-ever moved `organization.md` into its folder); and the
-detailed-prompt rerun did not adopt `covers` at all this time.
+themselves. One finding came with the win, since fixed: plan
+lint's `dangling_file` did not credit an `mv` step with creating
+its destination path, so it errored on the very shape the example
+teaches (and, for the wrong reason, flagged one real gap in that
+run: no step ever moved `organization.md` into its folder). The
+lint now computes `mv`/`cp` destinations (`mv a.txt Dir/` creates
+`Dir/a.txt`; a single-source file target is a rename), while an
+asserted destination no step actually produces still errors.
+Rerunning the bare prompt after the fix: lint clean, moves
+consolidated into one step, this time including `organization.md`.
+And the detailed-prompt rerun did not adopt `covers` at all that
+time.
 Examples teach by proximity, not guarantee; the widened pattern is
 what makes the harness catch the idiom whenever the planner does
 write it.

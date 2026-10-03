@@ -13,7 +13,8 @@ Findings come in two severities:
 Checks:
   dangling_file      (ERROR): a Then targets a file no step creates and the
                      task doesn't mention (e.g. Then checks greeting.txt
-                     while the plan writes hello.txt).
+                     while the plan writes hello.txt). mv/cp destinations
+                     count as creations: `mv a.txt Dir/` creates Dir/a.txt.
   value_from_nowhere (WARN): a Then asserts an exact value appearing nowhere
                      in the task or prior steps — computed or invented?
   unparseable_check  (WARN): a Then reads like a check ("contains exactly",
@@ -63,6 +64,43 @@ def _mentions(text: str) -> set[str]:
     return {p for p in out if p}
 
 
+_MOVE_CMD = re.compile(r"\b(?:mv|cp)\s+([^;&\n]+)", re.IGNORECASE)
+
+
+def _move_destinations(text: str) -> set[str]:
+    """Paths an mv/cp command in a When creates (v0.8.1 lint fix).
+
+    dangling_file worked from literal mentions, so the destination of
+    `mv garden-plan.md Garden/` (namely Garden/garden-plan.md) counted
+    as created by nobody, and the lint errored on the exact plan shape
+    the planner prompt's own archive example teaches (field, 2026-10-03).
+    Compute the destinations instead: target ending in "/" (or several
+    sources) means a folder, destination is folder + source basename;
+    a single source with a file target is a rename/copy, destination is
+    the target itself."""
+    import posixpath
+    import shlex
+    out: set[str] = set()
+    for m in _MOVE_CMD.finditer(text or ""):
+        try:
+            tokens = shlex.split(m.group(1))
+        except ValueError:
+            tokens = m.group(1).split()
+        tokens = [t for t in tokens if not t.startswith("-")]
+        if len(tokens) < 2:
+            continue
+        sources, target = tokens[:-1], tokens[-1].rstrip(",.")
+        if target.endswith("/") or len(sources) > 1:
+            folder = target.rstrip("/")
+            for src in sources:
+                base = posixpath.basename(src.rstrip("/"))
+                if base:
+                    out.add(f"{folder}/{base}" if folder else base)
+        else:
+            out.add(target)
+    return out
+
+
 def lint_plan(task: str, steps: list) -> list[LintFinding]:
     """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when)."""
     findings: list[LintFinding] = []
@@ -70,6 +108,7 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
     whens: list[str] = [task or ""]
     for s in steps:
         known |= _mentions(s.instruction)
+        known |= _move_destinations(s.instruction)
         known |= _mentions(s.given)
         whens.append(s.instruction or "")
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]

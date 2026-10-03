@@ -37,9 +37,9 @@ whether the model's native function calling is actually engaging.
 
 ## Design: why a 2B model gets this shape
 
-- **Five tools, one call per turn.** Small models get confused by wide tool
+- **Few tools, one call per turn.** Small models get confused by wide tool
   surfaces and parallel calls. `exec`, `read_file`, `write_file`,
-  `edit_file`, `list_dir` — plus `grep_files`, which moves the
+  `append_file`, `edit_file`, `list_dir` — plus `grep_files`, which moves the
   list-and-scan loop into code so the model never handles filenames it
   hasn't seen (it can't hallucinate what it can't invent).
 - **Native tool calling first, text fallback second.** The harness sends
@@ -156,7 +156,8 @@ reports DONE, the harness evaluates each `Then` **in code** before
 advancing — zero model calls on the happy path:
 
 - A registry of verifiers (`harness/verify.py`) matches `Then` phrasings:
-  `exists`, `not_exists`, `contains`, `contains_exactly`, `has_lines`.
+  `exists`, `not_exists`, `contains`, `contains_exactly`, `has_lines`,
+  and `covers` (v0.8.1, below).
   Adding a verifier is a `@verifier(name, pattern)` decorator + a check
   function — the engine never changes.
 - A failed `Then` triggers one bounded step retry with the verifier's
@@ -219,3 +220,258 @@ and into TDD retry feedback (so a failed attempt gets the idiom next
 to the checker's complaint). Pure data + substring matching, zero
 model calls. Add entries as new gaps are observed — each needs the
 idiom itself, not just advice.
+
+## Step-output store: data survives the step boundary (v0.8.1)
+
+First field failure of the shipped harness: a plan listed the files in
+a documents folder in step 1, then forgot the list by the step that was
+supposed to suggest an organization for them. Only a 250 character
+summary of each step's final answer crossed the boundary; tool outputs,
+where the real data lives, never did.
+
+`harness/runstore.py` fixes that in the harness, not the model. After
+every step, the harness writes the step's full record to a
+deterministic file:
+
+```
+<workspace>/.harness/runs/<YYYYMMDD-HHMMSS>/step-01.md
+<workspace>/.harness/latest.txt          (newest run folder name)
+```
+
+Each record holds the instruction, the Then clauses, every tool call
+with its result verbatim, the final answer, and the verification
+outcome, including earlier attempts when verification retried the step.
+Each step's prompt then names the exact prior-step files and tells the
+model to `read_file` the one it needs when it needs exact data instead
+of the summary. No new tool was needed: storage is deterministic and
+harness-written, access reuses the tool the model already knows.
+`latest.txt` is the continuation hook for a later session, and one
+`.gitignore` line (`.harness/`) keeps the records out of a git
+workspace's history.
+
+Same release, a smaller field fix: `list_dir` was shallow only, and
+listing a subfolder returned bare names no other tool could use as a
+path. It now takes an optional `depth` (default 1, the old behavior;
+the walk itself lives in code, the model only chooses how deep).
+Entries return as workspace-relative paths, folders with a trailing
+`/`; the listing is sorted, capped at 500 entries with the truncation
+announced, and symlinked folders are listed but never followed, so
+the walk cannot leave the jail. The `.harness/` records folder is not
+listed: it is bookkeeping, not user data.
+
+Same release, the plan frame: the executor prompt used to show only
+the current step, a v0.6 scoping decision made when the fear was a
+small model freelancing across steps. The field failures ran the
+other way: steps starved for context. Each step prompt now opens with
+a short frame explaining that this is one step of a multi-step plan,
+followed by the outline of the whole plan: every step with its status
+(done, your step, pending), done steps annotated with their result
+and their stored output file. One standing rule rides in the frame:
+if a step's work is based on an earlier step's output, read that
+step's file first. The operative instruction itself stays scoped to
+the current step and sits last in the prompt, where it always did.
+
+And the frame has a gate behind it. A later field run produced a
+one-line placeholder `organization.md`: the run record showed the
+writing step had never read the listing step's stored output at all.
+So when a step answers DONE and no tool call in its sub-run touched
+a prior step's output file, the harness pushes back, inside the
+same run, naming the exact file: read it and redo the step from its
+real contents. Reading through any tool counts (`read_file`, an
+`exec` cat, anything whose arguments name the path). The gate has
+two stages: stage one fires when the source was never read, and
+stage two fires when the step read it but changed nothing afterward,
+which is the exact sequence the next field run produced (write the
+placeholder, get pushed, read the file, re-assert DONE). Reading is
+not redoing. Pushbacks are capped at two per run; past the cap, DONE
+is accepted as-is, so a genuinely independent step pays a sentence
+or two, not a block. The loop stays generic about it: `loop.run`
+accepts a `done_gate` hook, consulted on every DONE until it clears
+or the cap is reached, and the planner supplies the plan-specific
+check.
+
+The same field run closed one more loop. Process checks can force
+the read; only a content check can judge the deliverable. This
+release adds the `covers` verifier: a `Then` of the form
+`"organization.md" covers the files from step 1` is checked in
+code against the source step's actual output. The harness extracts
+the item list deterministically from listing-shaped tool results
+(`list_dir` and `grep_files` output, `ls`/`find` output), counts
+how many of those names the deliverable actually mentions, and
+fails it below half, with the missing names as the retry feedback.
+A document that defers its own content ("to be filled in", TODO,
+and friends) fails on its own words. The planner is taught the
+idiom for any document derived from an earlier step's listing, and
+`VerifyContext` now carries prior steps' items, the seam future
+output-aware verifiers build on. Tests replay the field failure
+end to end: stub, failed coverage check, retry with the missing
+names, real summary.
+
+Also in this release: when a step's model answers a bare `DONE:`
+with no summary text, the next step's outline no longer carries an
+empty Result line. The harness computes one from its own record:
+the tools the step used and how many lines of output they produced.
+The summary channel can stay terse without going silent.
+
+Two papercuts from the same live session, fixed: `--task-file` read
+the task into a local variable that never reached the caller, so the
+planner planned for no task at all ("No Task Provided"); the resolved
+task now comes back on the args namespace where `run.py` reads it.
+And the step prompt's stored-at line ("Your full output will be
+stored at...") read as a write instruction to the model, which duly
+wrote its deliverable into its own record file; the line now says the
+harness does the storing and the model should not write there. A
+sequel from the same day's plan execution sharpened it further: a
+step pushed by the grounding gate to read a prior step's record read
+its OWN step's record path instead, a file that does not exist until
+the step finishes; the read errored, the error pushback and the
+repeat-call breaker spent the step's remaining turns, and the step
+failed with its work already done on disk. The frame, the stored-at
+line, and both gate messages now say plainly that a step's own output
+file is written by the harness after the step finishes, does not
+exist yet, and is not a source to read.
+
+Last, Tier 1 discovery: planning no longer starts blind. The bare
+prompt "organize files in this folder by category" produced a plan
+from the model's priors, category folders for `.pdf` and `.jpg` files
+in a folder containing neither, the real files (`.txt`, `.csv`, `.md`)
+addressed by no step. The harness now lists the workspace itself
+(names, kinds, sizes; no content read, no model calls, `.harness/`
+never listed, capped with the truncation announced) and puts that
+digest in the planner prompt with a plain instruction: plan against
+what is actually here, do not invent files, extensions, or
+categories. Rerunning the same bare prompt against the same folder
+produced categories drawn from the real inventory (Finance, Planning,
+Admin) and steps naming the real files. What the digest does not fix:
+the planner's mechanics (it proposed moving files into a "new file
+named Finance" rather than a folder) and its phrasing precision (it
+reached for the `covers` idiom in the detailed-prompt run but wrote
+"cover the files", which the strict verifier pattern does not match,
+so the clause attested).
+
+Both levers named there were then pulled. The `covers` pattern now
+tolerates the phrasings the planner actually produces: an optional
+"the contents of" prefix, and "cover" alongside "covers"; the lint
+heuristic was widened to match, so a near-miss arrangement ("will
+cover the files") warns instead of attesting silently. The
+strictness that matters is kept: a real path, "the files", a step
+reference, whole clause. And the planner prompt now carries two
+short exemplar plans (an index that must cover its source listing;
+meeting notes archived into a folder created as a folder, moves
+verified by the destination path), introduced as "copy the shape,
+not the content", with content deliberately unlike real tasks.
+Rerunning the bare prompt: folders created as folders with `exists`
+checks, real `mv` steps each verified by their destination path,
+one category per actual file; ten of thirteen Thens check
+themselves. One finding came with the win, since fixed: plan
+lint's `dangling_file` did not credit an `mv` step with creating
+its destination path, so it errored on the very shape the example
+teaches (and, for the wrong reason, flagged one real gap in that
+run: no step ever moved `organization.md` into its folder). The
+lint now computes `mv`/`cp` destinations (`mv a.txt Dir/` creates
+`Dir/a.txt`; a single-source file target is a rename), while an
+asserted destination no step actually produces still errors.
+Rerunning the bare prompt after the fix: lint clean, moves
+consolidated into one step, this time including `organization.md`.
+And the detailed-prompt rerun did not adopt `covers` at all that
+time.
+Examples teach by proximity, not guarantee; the widened pattern is
+what makes the harness catch the idiom whenever the planner does
+write it.
+
+Tier 2 discovery (`--discover`) completes the discovery story. A
+model-planned pass runs first with the tool registry itself
+restricted to read-only tools (`list_dir`, `read_file`,
+`grep_files`), so a discovery step cannot write even if its plan
+says to; its steps are recorded like any run. The planner is then
+called again with excerpts of those records (bounded, truncation
+announced) as findings, under an instruction to base categories,
+values, and groupings on them. The plan written to `plan.feature`
+is the informed one; approval and execution are unchanged. First
+live run, the same bare organize prompt: discovery chose to read
+all four files' contents, and the resulting plan sorted them into
+Planning, Finance, and Documents with every `Then` checking
+itself. Two frictions recorded for tuning: the grounding gate,
+built for derivation steps, pushes twice on each independent
+discovery read (the model paid several extra turns re-reading its
+target before its DONE was accepted); and when the planner phrases
+moves as prose ("I move X into Y/") rather than `mv` commands, the
+lint's destination computation does not see them and `dangling_file`
+fires, the same literalism the `mv` fix addressed for commands.
+
+Last, the `append_file` tool, from the index exercise that closed
+the day. Asked to build `index.md` from six small files, the
+planner decomposed per file ("add it to index.md", six steps, every
+`Then` on trust), and the run collapsed: a step's `write_file`
+"add" replaced the whole file and silently destroyed the previous
+step's entry, and the plan died two steps in with one entry of six
+in place. A hand-written list-then-compile plan carrying `covers`
+completed, and covers fired live for the first time. But the
+planner's shape was not wrong in intent, only unarmed: plans say
+"add", and the toolset had no verb for adding, only replacing.
+`append_file` appends exactly the content given (creating the file
+and parent folders when missing, jailed like the rest), so an
+accumulating file survives the steps that build it. It is not in
+the read-only set, so discovery cannot use it.
+
+The live proof of `append_file` closed one gap and exposed the
+day's last lesson. The model chose the new verb unsteered, on the
+first working turn of every step that needed it, and accumulation
+held. The per-file plan still died, at step 3 of 6, its append
+already landed: of the step's six turns, two were work and the rest
+were the grounding gate's pushbacks, its compliance read, and a
+redundant re-read. It was the third live death with that signature
+(the organize plan's step 3 and index run 1's step 2 before it): a
+step failed for exhausting a budget that harness process had spent.
+So the accounting changed: `max_steps` now bounds the model's own
+turns, and the harness's capped pushbacks (the gate, at most two;
+the DONE-after-error pushback, at most one) each refund the turn
+they consumed, so supervision is not charged to the supervised.
+Everything else still counts, including the uncapped narration
+nudge, so refunds cannot loop. The same change guarantees one
+small thing in `append_file`: the file ends with a line break after
+each append (one is added when the content lacks it), because the
+proof run's entries ran together on single lines when the model
+forgot its trailing newlines.
+
+Finally, intent preservation. The index task asked for "every file
+with its name and a one-line description of what it actually
+contains"; the plan decomposed that into "add the content" and the
+finished index held raw file dumps, four of six entries with no
+filename at all. Diagnosis: the planner prompt defined a good step
+only mechanically (concrete action, checkable Then), its
+verifiability pressure trades a description (unverifiable in code
+by nature) for containment of the content, and a property of the
+whole document has no home once the plan is tiled into steps. So
+intent is data now, not advice: a scenario may carry one `Intent:`
+line, the step's purpose in the task's own terms, parsed and
+rendered like any other plan element, rejected when empty,
+duplicated, or placeholder-bearing. The planner prompt requires it
+whenever the task specifies what a deliverable must contain or be
+like ("a description is not the content"), a third exemplar models
+a task with a qualitative spec surviving decomposition, the
+executor's step prompt states the intent directly above the
+instruction it frames, and a new lint warning, `intent_drift`,
+flags a plan at approval time when the task's spec words
+(description, summary, caption, one-line, one-sentence) survive in
+no step at all.
+
+The day's last fix is surgical, aimed at the grounding gate's own
+bluntness. In the intent run, step 2 wrote a good index on its first
+attempt; the gate's stage 2 ("you read it but changed nothing")
+ordered a redo, and the redo briefly overwrote the good index with
+a worse one copied from another step's draft. Stage 2 fired blind:
+it demanded rework before verification had ever examined the
+deliverable it suspected. Now, at the moment stage 2 would fire,
+the harness runs the step's own `Then` clauses against the
+workspace, and if they pass on content-bearing checks (`contains`,
+`contains_exactly`, `covers`, `has_lines`), the suspicion is
+answered and the gate stays silent. Two refinements keep it honest:
+an attested `Then` is no evidence, so on trust the pushback stands
+as before; and a bare `exists` pass proves nothing either, since
+the deferral stub that founded stage 2 satisfied `exists` while
+promising its content later — the older field-sequence tests
+refused to let that case go, and they were right. The general
+companion (snapshot each attempt's targets, restore the best
+verified state when a later attempt ends worse) is designed and
+deferred, not built.

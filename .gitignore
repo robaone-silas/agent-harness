@@ -1,4 +1,5 @@
 # run artifacts (logs, sandboxes) stay local — same policy as the Drive zips
+.harness/
 eval-results-*.jsonl
 eval-sandboxes/
 demo-sandbox/

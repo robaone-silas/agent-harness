@@ -118,6 +118,10 @@ def t_planned_run_happy():
          "tool_calls": [{"function": {"name": "exec",
                                       "arguments": {"command": "cat a.txt"}}}]},
         {"role": "assistant", "content": "DONE: output shows x."},
+        # v0.8.1 grounding gate v2: step 2 never read step 1's stored output,
+        # so its DONEs draw two pushbacks (the cap); the third DONE stands.
+        {"role": "assistant", "content": "DONE: output shows x (no dependency)."},
+        {"role": "assistant", "content": "DONE: output shows x, still (no dependency)."},
         {"role": "assistant", "content": "DONE: both steps complete."},
     ])
     events = []
@@ -125,7 +129,7 @@ def t_planned_run_happy():
                             on_event=lambda k, *a: events.append(k))
     check("planned status", r.status == "done", r.status)
     check("both steps done", [s.status for s in r.steps] == ["done", "done"])
-    check("sequenced calls", fake.calls["n"] == 6, str(fake.calls["n"]))
+    check("sequenced calls", fake.calls["n"] == 8, str(fake.calls["n"]))
     check("plan event", "plan" in events)
     check("step events", events.count("step_done") == 2)
     check("file written", Path(d, "a.txt").read_text() == "x")
@@ -174,11 +178,15 @@ def t_scoped_prompt_only_current_step():
     r = planner.run_planned("overall goal here", cfg, chat_fn=fake)
     check("planned status", r.status == "done", r.status)
     check("two scoped prompts", len(seen) == 2, str(len(seen)))
-    main_part = seen[1].split("Results of previous steps")[0]
-    check("step2 prompt scopes to step 2",
-          "Run: cat a.txt" in main_part
-          and "Write a.txt containing x" not in main_part, main_part[:200])
-    check("step2 sees step1 result", "context only" in seen[1])
+    # v0.8.1 plan frame: the prompt DOES show the whole plan now (outline),
+    # a deliberate reversal of the v0.6 scoping, but execution stays scoped:
+    # the operative block at the end is only the current step's instruction.
+    operative = seen[1].rsplit("\nStep: ", 1)[-1]
+    check("step2 operative block scopes to step 2",
+          operative.startswith("Run: cat a.txt")
+          and "Write a.txt containing x" not in operative, operative[:200])
+    check("step2 sees step1 marked done in the outline",
+          "[done]" in seen[1] and "Result: DONE:" in seen[1], seen[1][:400])
     shutil.rmtree(d)
 
 

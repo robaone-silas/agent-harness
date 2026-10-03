@@ -44,6 +44,10 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
     p.add_argument("--plan", action="store_true",
                    help="Propose a Gherkin plan, write it to plan.feature, and stop "
                         "for human review/editing. Does not execute.")
+    p.add_argument("--discover", action="store_true",
+                   help="Tier 2: run a read-only discovery pass first, then "
+                        "propose the plan with the findings in hand (writes "
+                        "plan.feature and stops, like --plan).")
     p.add_argument("--run", metavar="FEATURE",
                    help="Execute an approved .feature plan file.")
     p.add_argument("--auto", action="store_true",
@@ -60,6 +64,11 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
     if not task and not args.run:
         p.error("provide a task as an argument or via --task-file "
                 "(or --run an approved .feature file)")
+    # Callers read the task back off the namespace (run.py uses args.task),
+    # so the resolved text, file content included, is what they must get.
+    # (Field bug 2026-10-03: this hand-back was missing and --task-file
+    # silently planned for no task at all.)
+    args.task = task
 
     cfg = Config(
         model=args.model,

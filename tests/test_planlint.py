@@ -137,6 +137,76 @@ def t_clean_plan_no_retry():
           str([s.lint for s in steps]))
 
 
+def t_covers_near_miss_warns_unparseable():
+    # planlint alignment with the widened verifier (2026-10-03): a Then
+    # that reaches for "cover the files" in an arrangement the verifier
+    # still cannot check ("will cover") must warn as an unparseable check
+    # rather than attest silently.
+    task = "Summarize the files in the folder"
+    steps = _steps(task, [
+        ("I list the files", "the list is recorded"),
+        ("I write summary.txt", "summary.txt will cover the files from step 1"),
+    ])
+    fs = planlint.lint_plan(task, steps)
+    warns = [f for f in fs if f.code == "unparseable_check"]
+    check("covers near-miss warns", len(warns) == 1,
+          f"{[(f.code, f.detail) for f in fs]}")
+    check("covers near-miss is on step 2", warns[0].step_id == 2, str(warns[0].step_id))
+
+
+def t_mv_destination_not_dangling():
+    # Field shape (2026-10-03): the planner, taught by the archive
+    # example, writes "mv garden-plan.md Garden/" and checks
+    # "Garden/garden-plan.md" exists. The joined destination path never
+    # appears literally in any When, so dangling_file errored on the
+    # very shape the harness teaches. An mv creates its destination.
+    task = "Organize files in this folder by category"
+    steps = _steps(task, [
+        ("I list the files in the current folder", "the output lists the files"),
+        ('I create the folder "Garden"', '"Garden" exists'),
+        ("I run: mv garden-plan.md Garden/", '"Garden/garden-plan.md" exists'),
+    ])
+    fs = planlint.lint_plan(task, steps)
+    check("mv destination not dangling",
+          [f for f in fs if f.code == "dangling_file"] == [],
+          f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_mv_rename_and_cp_destinations():
+    task = "Tidy the notes"
+    steps = _steps(task, [
+        ("I run: mv draft.txt final.txt", '"final.txt" exists'),
+        ("I run: cp notes.txt backup/notes.txt", '"backup/notes.txt" exists'),
+        ("I run: mv a.txt b.txt Archive/",
+         '"Archive/a.txt" exists\n"Archive/b.txt" exists'),
+    ])
+    fs = planlint.lint_plan(task, steps)
+    check("rename/cp/multi-source destinations not dangling",
+          [f for f in fs if f.code == "dangling_file"] == [],
+          f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_mv_does_not_mask_a_real_dangling():
+    # The other half of the field case: the Organization folder was
+    # created and a later Then asserted "Organization/organization.md"
+    # exists, but no step ever moved organization.md anywhere. That is
+    # a genuine dangling reference and must still error, even with an
+    # unrelated mv elsewhere in the plan.
+    task = "Organize files in this folder by category"
+    steps = _steps(task, [
+        ("I list the files in the current folder", "the output lists the files"),
+        ('I create the folder "Organization"', '"Organization" exists'),
+        ("I run: mv garden-plan.md Garden/", '"Garden/garden-plan.md" exists'),
+        ("I list the files in the current folder",
+         '"Organization/organization.md" exists'),
+    ])
+    fs = planlint.lint_plan(task, steps)
+    errs = [f for f in fs if f.code == "dangling_file"]
+    check("unmoved file still dangles", len(errs) == 1, f"{[(f.code, f.detail) for f in fs]}")
+    check("the dangling path is the unmoved one",
+          "Organization/organization.md" in errs[0].detail, errs[0].detail)
+
+
 def t_gherkin_still_validates_first():
     # Structural rejection still works and doesn't reach the lint.
     calls = []
@@ -154,6 +224,9 @@ def t_gherkin_still_validates_first():
 if __name__ == "__main__":
     for fn in [t_dangling_file, t_value_from_nowhere, t_value_grounded_in_task_passes,
                t_unparseable_check, t_consistent_hallucination_not_catchable,
+               t_covers_near_miss_warns_unparseable,
+               t_mv_destination_not_dangling, t_mv_rename_and_cp_destinations,
+               t_mv_does_not_mask_a_real_dangling,
                t_good_plan_clean, t_lint_retry_integration, t_clean_plan_no_retry,
                t_gherkin_still_validates_first]:
         fn()

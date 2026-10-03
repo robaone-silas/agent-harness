@@ -13,12 +13,18 @@ Findings come in two severities:
 Checks:
   dangling_file      (ERROR): a Then targets a file no step creates and the
                      task doesn't mention (e.g. Then checks greeting.txt
-                     while the plan writes hello.txt).
+                     while the plan writes hello.txt). mv/cp destinations
+                     count as creations: `mv a.txt Dir/` creates Dir/a.txt.
   value_from_nowhere (WARN): a Then asserts an exact value appearing nowhere
                      in the task or prior steps — computed or invented?
   unparseable_check  (WARN): a Then reads like a check ("contains exactly",
                      "should exist", ...) but matches no verifier, so the
                      harness will take it on trust.
+  intent_drift       (WARN): the task's outcome words (description,
+                     summary, caption, one-line, ...) survive in no step's
+                     Intent, When, or Then — decomposition may have
+                     silently traded the task's intent for mechanics
+                     (field: "a one-line description" became "the content").
 """
 from __future__ import annotations
 
@@ -34,7 +40,7 @@ _BARE_PATH = re.compile(r"(?<![\w./-])([\w-]+(?:[./][\w.-]+)+)(?![\w.-])")
 # Phrasing that *tries* to be a machine check.
 _CHECKY = re.compile(
     r"""contains?\s+(exactly\s+)?["'`]|\bexists?\s*[.!]*$|does\s+not\s+exist|"""
-    r"""has\s+\d+\s+lines?""",
+    r"""has\s+\d+\s+lines?|covers?\s+the\s+files""",
     re.IGNORECASE,
 )
 
@@ -63,6 +69,70 @@ def _mentions(text: str) -> set[str]:
     return {p for p in out if p}
 
 
+_MOVE_CMD = re.compile(r"\b(?:mv|cp)\s+([^;&\n]+)", re.IGNORECASE)
+
+
+def _move_destinations(text: str) -> set[str]:
+    """Paths an mv/cp command in a When creates (v0.8.1 lint fix).
+
+    dangling_file worked from literal mentions, so the destination of
+    `mv garden-plan.md Garden/` (namely Garden/garden-plan.md) counted
+    as created by nobody, and the lint errored on the exact plan shape
+    the planner prompt's own archive example teaches (field, 2026-10-03).
+    Compute the destinations instead: target ending in "/" (or several
+    sources) means a folder, destination is folder + source basename;
+    a single source with a file target is a rename/copy, destination is
+    the target itself."""
+    import posixpath
+    import shlex
+    out: set[str] = set()
+    for m in _MOVE_CMD.finditer(text or ""):
+        try:
+            tokens = shlex.split(m.group(1))
+        except ValueError:
+            tokens = m.group(1).split()
+        tokens = [t for t in tokens if not t.startswith("-")]
+        if len(tokens) < 2:
+            continue
+        sources, target = tokens[:-1], tokens[-1].rstrip(",.")
+        if target.endswith("/") or len(sources) > 1:
+            folder = target.rstrip("/")
+            for src in sources:
+                base = posixpath.basename(src.rstrip("/"))
+                if base:
+                    out.add(f"{folder}/{base}" if folder else base)
+        else:
+            out.add(target)
+    return out
+
+
+# Words that carry a task's qualitative specification of its deliverable.
+# If the task uses one and no step does, the spec likely died in
+# decomposition (intent_drift). Stems, matched case-insensitively.
+_SPEC_STEMS = ("descri", "summar", "caption", "one-line", "one-sentence")
+
+
+def _intent_drift(task: str, steps: list) -> LintFinding | None:
+    task_low = (task or "").lower()
+    plan_low = "\n".join(
+        " ".join([getattr(s, "intent", "") or "", s.instruction or "",
+                  s.done_when or "", s.given or "",
+                  getattr(s, "title", "") or ""])
+        for s in steps).lower()
+    missing = []
+    for stem in _SPEC_STEMS:
+        if stem in task_low and stem not in plan_low:
+            m = re.search(r"[\w-]*" + re.escape(stem) + r"[\w-]*", task_low)
+            missing.append(m.group(0) if m else stem)
+    if not missing or not steps:
+        return None
+    return LintFinding(
+        steps[-1].id, "warn", "intent_drift",
+        f"Plan: the task asks for {', '.join(missing)}, but no step's "
+        f"Intent, When, or Then mentions it — the task's intent may "
+        f"have been lost in decomposition.")
+
+
 def lint_plan(task: str, steps: list) -> list[LintFinding]:
     """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when)."""
     findings: list[LintFinding] = []
@@ -70,6 +140,7 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
     whens: list[str] = [task or ""]
     for s in steps:
         known |= _mentions(s.instruction)
+        known |= _move_destinations(s.instruction)
         known |= _mentions(s.given)
         whens.append(s.instruction or "")
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
@@ -96,4 +167,7 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
                         f"Step {s.id}: Then asserts exact value '{v[:60]}', "
                         f"which appears nowhere in the task or prior steps — "
                         f"computed or invented?"))
+    drift = _intent_drift(task, steps)
+    if drift is not None:
+        findings.append(drift)
     return findings

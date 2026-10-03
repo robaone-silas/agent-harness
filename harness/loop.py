@@ -56,9 +56,23 @@ def _extract_fallback(content: str) -> tuple[str, dict | None]:
     return thought, {"name": data["name"], "arguments": data.get("arguments", {})}
 
 
-def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
+def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
+        only_tools=None) -> RunResult:
     """Run the agent loop. chat_fn(messages, tools) -> assistant message dict;
-    inject a fake for tests. on_step(step) receives each Step for live display."""
+    inject a fake for tests. on_step(step) receives each Step for live display.
+    done_gate(steps) -> str | None: consulted once before a DONE: is accepted;
+    returning text pushes back with that message instead (the caller decides
+    what "ready to finish" requires — e.g. the planner's grounding gate).
+    only_tools: optional allowlist of tool names (v0.8.1 Tier 2 discovery
+    runs read-only: the registry itself is restricted, so a step cannot
+    write even if its instructions say to).
+
+    Budget accounting (v0.8.1): cfg.max_steps bounds the model's own
+    turns. The harness's capped pushbacks (the done_gate, at most 2, and
+    the DONE-after-error pushback, at most 1) each refund the turn they
+    consumed: three live plan steps died with their work done because
+    supervision spent their budgets. Everything else counts as before,
+    including the uncapped narration nudge, so refunds cannot loop."""
     chat_fn = chat_fn or (lambda messages, tool_defs: _client.chat(
         cfg.endpoint, cfg.model, messages,
         tools=_client.to_ollama_tools(tool_defs) if tool_defs else None,
@@ -68,6 +82,8 @@ def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
     jail = _tools.Jail(cfg.workspace)
     registry = _tools.make_tools(jail, cfg.blocked_substrings, cfg.exec_timeout,
                                  cfg.max_output_chars)
+    if only_tools is not None:
+        registry = {k: v for k, v in registry.items() if k in only_tools}
     tool_defs = [{k: d[k] for k in ("name", "description", "parameters")}
                  for d in registry.values()]
 
@@ -82,13 +98,18 @@ def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
     # "error", or "nudged" (repeat-after-success nudge, which asks for DONE:).
     last_outcome: str | None = None
     error_pushback_sent = False
+    gate_fires = 0  # done_gate pushbacks so far (capped at 2, v0.8.1 gate v2)
 
     def emit(step: Step):
         result.steps.append(step)
         if on_step:
             on_step(step)
 
-    for n in range(1, cfg.max_steps + 1):
+    n = 0
+    pushbacks = 0  # capped harness pushbacks fired; each refunds its turn
+    hit_error_limit = False
+    while n < cfg.max_steps + pushbacks:
+        n += 1
         try:
             msg = chat_fn(messages, tool_defs)
         except Exception as e:  # model/transport failure ends the run
@@ -127,10 +148,27 @@ def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
                     # (e.g. a plan referencing a file that doesn't exist).
                     # Push back once and demand engagement with the error.
                     error_pushback_sent = True
+                    pushbacks += 1  # harness turn, not model work: refund it
                     emit(Step(n, content, None, None, None, "nudge"))
                     messages.append({"role": "user",
                                      "content": prompts.DONE_AFTER_ERROR_PUSHBACK})
                     continue
+                if done_gate is not None and gate_fires < 2:
+                    # Caller-supplied readiness check (e.g. grounding: the
+                    # step never read the earlier output it builds on, or
+                    # read it and changed nothing). Consulted on every
+                    # DONE until it clears, capped at two pushbacks — the
+                    # gate advises with teeth, it does not imprison.
+                    try:
+                        pushback = done_gate(list(result.steps))
+                    except Exception:
+                        pushback = None
+                    if pushback:
+                        gate_fires += 1
+                        pushbacks += 1  # harness turn, not model work: refund it
+                        emit(Step(n, content, None, None, None, "nudge"))
+                        messages.append({"role": "user", "content": pushback})
+                        continue
                 emit(Step(n, content, None, None, None, "final"))
                 result.answer = content
                 result.status = "done"
@@ -206,8 +244,11 @@ def run(task: str, cfg, chat_fn=None, on_step=None) -> RunResult:
 
         if errors >= cfg.max_consecutive_errors:
             result.status = "error_limit"
+            hit_error_limit = True
             break
-    else:
+    if not hit_error_limit:
+        # The budget ran out (the model's own turns plus any refunded
+        # pushback turns): the run ends as a step-limit failure.
         result.status = "max_steps"
 
     # One final call so the run ends with a human-readable summary, not a trace.

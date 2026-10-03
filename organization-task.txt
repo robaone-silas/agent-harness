@@ -1,1 +1,0 @@
-Look at the files in this workspace folder and devise an organization strategy for them, based on the files that are actually there. Save the strategy as organization.md. The strategy should name the actual files, group them in a way that makes sense for what they are, and say what goes where.

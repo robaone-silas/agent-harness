@@ -1,1 +1,0 @@
-Look at the files in this workspace and build an index of them. Read each file, then create index.md listing every file with its name and a one-line description of what it actually contains, based on what you read.

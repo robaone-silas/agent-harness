@@ -156,7 +156,8 @@ reports DONE, the harness evaluates each `Then` **in code** before
 advancing — zero model calls on the happy path:
 
 - A registry of verifiers (`harness/verify.py`) matches `Then` phrasings:
-  `exists`, `not_exists`, `contains`, `contains_exactly`, `has_lines`.
+  `exists`, `not_exists`, `contains`, `contains_exactly`, `has_lines`,
+  and `covers` (v0.8.1, below).
   Adding a verifier is a `@verifier(name, pattern)` decorator + a check
   function — the engine never changes.
 - A failed `Then` triggers one bounded step retry with the verifier's
@@ -274,10 +275,40 @@ And the frame has a gate behind it. A later field run produced a
 one-line placeholder `organization.md`: the run record showed the
 writing step had never read the listing step's stored output at all.
 So when a step answers DONE and no tool call in its sub-run touched
-a prior step's output file, the harness pushes back once, inside the
+a prior step's output file, the harness pushes back, inside the
 same run, naming the exact file: read it and redo the step from its
 real contents. Reading through any tool counts (`read_file`, an
-`exec` cat, anything whose arguments name the path). A second DONE
-is accepted as-is: genuinely independent steps pay one sentence,
-not a block. The loop stays generic about it: `loop.run` accepts a
-`done_gate` hook and the planner supplies the plan-specific check.
+`exec` cat, anything whose arguments name the path). The gate has
+two stages: stage one fires when the source was never read, and
+stage two fires when the step read it but changed nothing afterward,
+which is the exact sequence the next field run produced (write the
+placeholder, get pushed, read the file, re-assert DONE). Reading is
+not redoing. Pushbacks are capped at two per run; past the cap, DONE
+is accepted as-is, so a genuinely independent step pays a sentence
+or two, not a block. The loop stays generic about it: `loop.run`
+accepts a `done_gate` hook, consulted on every DONE until it clears
+or the cap is reached, and the planner supplies the plan-specific
+check.
+
+The same field run closed one more loop. Process checks can force
+the read; only a content check can judge the deliverable. This
+release adds the `covers` verifier: a `Then` of the form
+`"organization.md" covers the files from step 1` is checked in
+code against the source step's actual output. The harness extracts
+the item list deterministically from listing-shaped tool results
+(`list_dir` and `grep_files` output, `ls`/`find` output), counts
+how many of those names the deliverable actually mentions, and
+fails it below half, with the missing names as the retry feedback.
+A document that defers its own content ("to be filled in", TODO,
+and friends) fails on its own words. The planner is taught the
+idiom for any document derived from an earlier step's listing, and
+`VerifyContext` now carries prior steps' items, the seam future
+output-aware verifiers build on. Tests replay the field failure
+end to end: stub, failed coverage check, retry with the missing
+names, real summary.
+
+Also in this release: when a step's model answers a bare `DONE:`
+with no summary text, the next step's outline no longer carries an
+empty Result line. The harness computes one from its own record:
+the tools the step used and how many lines of output they produced.
+The summary channel can stay terse without going silent.

@@ -34,6 +34,10 @@ class VerifyContext:
     jail: Jail       # path resolution; Refusal on workspace escape
     step_id: int
     task: str
+    # v0.8.1: items produced by earlier steps (step id -> names extracted
+    # from that step's listing-shaped tool results). Lets a verifier judge
+    # a deliverable against the actual source data, not just the plan.
+    prior_items: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -80,6 +84,55 @@ def _resolve(ctx: VerifyContext, rel: str | None) -> tuple[object | None, str]:
         return ctx.jail.resolve((rel or "").strip()), ""
     except Refusal as e:
         return None, str(e)
+
+
+# Deferral language: a document that promises its own content instead of
+# containing it. Scanned by the covers verifier (v0.8.1 field failure: a
+# deliverable whose whole substance was "(Content to be filled in...)").
+_DEFERRALS = [re.compile(p, re.IGNORECASE) for p in (
+    r"to be filled in", r"to be completed", r"to be written",
+    r"placeholder", r"lorem ipsum", r"content goes here",
+    r"will be added", r"coming soon", r"\bTODO\b", r"\bTBD\b",
+)]
+
+
+def _deferral_in(text: str) -> str | None:
+    for rx in _DEFERRALS:
+        m = rx.search(text or "")
+        if m:
+            return m.group(0)
+    return None
+
+
+def collect_step_items(sub_steps) -> list[str]:
+    """Extract the item names a step produced, from listing-shaped tool
+    results: list_dir and grep_files outputs (one workspace-relative name
+    per line) and `ls`/`find` exec output. Other tools' results are prose
+    or content, not name lists, and are never mined. Deterministic, deduped,
+    order preserved."""
+    items: list[str] = []
+    for s in sub_steps:
+        if not s.tool or s.result is None:
+            continue
+        lines = None
+        if s.tool in ("list_dir", "grep_files"):
+            lines = s.result.splitlines()
+        elif s.tool == "exec":
+            cmd = str((s.args or {}).get("command", ""))
+            if re.match(r"\s*(ls|find)\b", cmd):
+                lines = [ln for ln in s.result.splitlines()
+                         if not ln.startswith("exit=")]
+        if lines is None:
+            continue
+        for ln in lines:
+            name = ln.strip().rstrip("/")
+            if not name or name in ("(empty)", "(no matches)"):
+                continue
+            if name.startswith("...[") or name.startswith("exit="):
+                continue
+            if name not in items:
+                items.append(name)
+    return items
 
 
 # A quoted string with matching quotes: "text", 'text', `text` (3 groups).
@@ -129,6 +182,49 @@ def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
         return CheckResult(then, True, "has_lines", f"{rel!r} has {n} lines")
     return CheckResult(then, False, "has_lines",
                        f"{rel!r} has {got} lines, expected {n}")
+
+
+@verifier("covers",
+          rf"""^{_FILE}{_QPATH}\s+covers\s+the\s+files\s+"""
+          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
+def _v_covers(m: re.Match, ctx: VerifyContext) -> CheckResult:
+    rel = _pick(*m.groups()[0:4])
+    step_no = int(m.group(5))
+    then = m.string.strip()
+    p, err = _resolve(ctx, rel)
+    if err:
+        return CheckResult(then, False, "covers", err)
+    items = list(ctx.prior_items.get(step_no) or [])
+    if not items:
+        # Nothing recorded to measure against: the harness only fails what
+        # it can actually check, and says plainly that it did not check.
+        return CheckResult(then, True, "covers",
+                           f"step {step_no} produced no file list — "
+                           f"coverage not checked")
+    if not p.is_file():
+        return CheckResult(then, False, "covers",
+                           f"{rel!r} is not a file — expected it to cover "
+                           f"the {len(items)} files from step {step_no}")
+    content = p.read_text(errors="replace")
+    bad = _deferral_in(content)
+    if bad:
+        return CheckResult(then, False, "covers",
+                           f"{rel!r} contains a deferral ({bad!r}) — the "
+                           f"document must be finished, not promised")
+    covered = [i for i in items if i in content]
+    need = max(1, -(-len(items) // 2))  # at least half, rounded up
+    if len(covered) >= need:
+        return CheckResult(then, True, "covers",
+                           f"{rel!r} mentions {len(covered)} of {len(items)} "
+                           f"files from step {step_no}")
+    missing = [i for i in items if i not in content]
+    detail = (f"{rel!r} mentions {len(covered)} of {len(items)} files from "
+              f"step {step_no} (needs at least {need}); missing include: "
+              + ", ".join(missing[:12]))
+    if len(missing) > 12:
+        detail += (f" and {len(missing) - 12} more "
+                   f"(see step {step_no}'s stored output)")
+    return CheckResult(then, False, "covers", detail)
 
 
 @verifier("contains",

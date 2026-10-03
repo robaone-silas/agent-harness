@@ -85,7 +85,7 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None) -> RunResult
     # "error", or "nudged" (repeat-after-success nudge, which asks for DONE:).
     last_outcome: str | None = None
     error_pushback_sent = False
-    gate_fired = False
+    gate_fires = 0  # done_gate pushbacks so far (capped at 2, v0.8.1 gate v2)
 
     def emit(step: Step):
         result.steps.append(step)
@@ -135,17 +135,18 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None) -> RunResult
                     messages.append({"role": "user",
                                      "content": prompts.DONE_AFTER_ERROR_PUSHBACK})
                     continue
-                if done_gate is not None and not gate_fired:
+                if done_gate is not None and gate_fires < 2:
                     # Caller-supplied readiness check (e.g. grounding: the
-                    # step never read the earlier output it builds on). One
-                    # pushback, then DONE: is accepted regardless — the
+                    # step never read the earlier output it builds on, or
+                    # read it and changed nothing). Consulted on every
+                    # DONE until it clears, capped at two pushbacks — the
                     # gate advises with teeth, it does not imprison.
                     try:
                         pushback = done_gate(list(result.steps))
                     except Exception:
                         pushback = None
                     if pushback:
-                        gate_fired = True
+                        gate_fires += 1
                         emit(Step(n, content, None, None, None, "nudge"))
                         messages.append({"role": "user", "content": pushback})
                         continue

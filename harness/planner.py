@@ -50,6 +50,10 @@ Rules:
   `"path" exists`, `"path" contains "text"`, `"path" contains exactly "text"`,
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
+- When a step writes a document derived from an earlier step's file listing
+  (a summary, strategy, report, or index of those files), write its Then as
+  `"out.txt" covers the files from step N` (N = the listing step) — the
+  harness checks the document actually mentions the source files.
 - The Then must accurately describe THIS step's expected outcome. A precisely
   worded wrong expectation fails verification just as surely as a vague one.
 - Concrete values come from the task statement only — never <angle-bracket
@@ -91,6 +95,8 @@ class PlanStep:
     lint: list = field(default_factory=list)  # planlint findings (dicts)
     verify_waived: bool = False  # verification failed but step accepted anyway
     output_path: str = ""  # .harness/runs/<run>/step-NN.md (v0.8.1, issue #2)
+    source_items: list = field(default_factory=list)  # names this step produced (v0.8.1 covers)
+    tool_summary: str = ""  # harness-computed "tools used; output size" line
 
 
 def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
@@ -229,7 +235,17 @@ def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
         if s.id != current_id and s.instruction and title:
             lines.append(f"    When: {s.instruction.split(chr(10))[0][:160]}")
         if s.status == "done" and s.id != current_id:
-            if s.result:
+            body = s.result or ""
+            if body.strip().upper().startswith("DONE:"):
+                body = body.strip()[5:].strip()
+            if body:
+                lines.append(f"    Result: {s.result[:200]}")
+            elif s.tool_summary:
+                # The model answered a bare "DONE:" — the summary channel
+                # carried nothing. The harness computes a factual line from
+                # its own record instead of leaving a blank.
+                lines.append(f"    Result: (no summary given) {s.tool_summary}")
+            elif s.result:
                 lines.append(f"    Result: {s.result[:200]}")
             if s.output_path:
                 lines.append(f"    Full output: {s.output_path}")
@@ -253,16 +269,31 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
 
     def gate(sub_steps) -> str | None:
         import json as _json
-        for s in sub_steps:
-            if s.tool and s.args and any(
-                    p in _json.dumps(s.args, default=str) for p in priors):
-                return None
-        return (f"HARNESS: you are finishing step {step.id} without having read "
-                f"the output of the earlier step(s) this plan builds on: "
-                f"{', '.join(priors)}. Those files are the record of what the "
-                f"earlier steps actually produced. Read the file now with "
-                f"read_file and redo this step using its real contents. If this "
-                f"step genuinely does not depend on that output, answer DONE: "
+
+        def names_prior(s) -> bool:
+            return bool(s.tool and s.args and any(
+                p in _json.dumps(s.args, default=str) for p in priors))
+
+        read_idx = next((i for i, s in enumerate(sub_steps) if names_prior(s)),
+                        None)
+        if read_idx is None:
+            # Stage 1: never touched the source at all.
+            return (f"HARNESS: you are finishing step {step.id} without having read "
+                    f"the output of the earlier step(s) this plan builds on: "
+                    f"{', '.join(priors)}. Those files are the record of what the "
+                    f"earlier steps actually produced. Read the file now with "
+                    f"read_file and redo this step using its real contents. If this "
+                    f"step genuinely does not depend on that output, answer DONE: "
+                    f"again and say why in one sentence.")
+        if any(s.tool and not names_prior(s) for s in sub_steps[read_idx + 1:]):
+            return None  # real work happened after the read: grounded
+        # Stage 2 (the 20261002-192409 field sequence): the source was read,
+        # possibly only because stage 1 forced it, and then DONE was
+        # re-asserted with nothing changed. Reading is not redoing.
+        return (f"HARNESS: you read {', '.join(priors)} but you have not changed "
+                f"anything since reading it. Redo this step now using what the "
+                f"file contains: write or edit the deliverable from its real "
+                f"contents. If nothing genuinely needs to change, answer DONE: "
                 f"again and say why in one sentence.")
 
     return gate
@@ -291,7 +322,9 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     separate path block: summaries and paths now ride with the step they
     describe."""
     from . import verify as _verify
-    vctx = _verify.VerifyContext(jail=jail, step_id=step.id, task=task)
+    vctx = _verify.VerifyContext(
+        jail=jail, step_id=step.id, task=task,
+        prior_items={s.id: list(s.source_items) for s in steps if s.source_items})
     feedback = ""
     last_vres = None
     attempts: list[dict] = []
@@ -299,6 +332,17 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     gate = _grounding_gate(step, steps)
 
     def persist(status: str):
+        if attempts:
+            counts: dict[str, int] = {}
+            n_lines = 0
+            for s in attempts[-1].get("sub_steps") or []:
+                if s.tool:
+                    counts[s.tool] = counts.get(s.tool, 0) + 1
+                    n_lines += len((s.result or "").splitlines())
+            if counts:
+                step.tool_summary = (
+                    ", ".join(f"{t} x{n}" for t, n in counts.items())
+                    + f"; {n_lines} lines of tool output")
         if store is None:
             return
         try:
@@ -350,6 +394,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             persist("failed")
             emit("step_failed", step)
             return False
+        step.source_items = _verify.collect_step_items(list(r.steps))
         thens = [t.strip() for t in step.done_when.split("\n") if t.strip()]
         vres = _verify.verify_step(thens, vctx)
         step.verify = [{"then": c.then, "verifier": c.verifier,

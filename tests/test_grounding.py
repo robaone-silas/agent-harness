@@ -93,18 +93,24 @@ def t_gate_blocks_first_done_then_accepts():
         shutil.rmtree(d)
 
 
-def t_gate_fires_at_most_once():
+def t_gate_capped_at_two_pushbacks():
+    # Gate v2 (2026-10-02): the gate is consulted on every DONE until it
+    # clears, but the loop caps pushbacks at two per run, so a gate that
+    # never clears still cannot imprison the run.
     cfg, d = make_cfg()
     try:
-        gate_calls = {"pushbacks": 0}
+        consultations = {"n": 0}
 
         def gate(steps):
-            gate_calls["pushbacks"] += 1
-            return "HARNESS: ALWAYS PUSH"
+            consultations["n"] += 1
+            if consultations["n"] <= 2:
+                return "HARNESS: ALWAYS PUSH"
+            return None
 
         responses = iter([
             {"role": "assistant", "content": "DONE: first."},
-            {"role": "assistant", "content": "DONE: second, with my reason."},
+            {"role": "assistant", "content": "DONE: second."},
+            {"role": "assistant", "content": "DONE: third, accepted."},
         ])
 
         def fake(messages, tool_defs):
@@ -114,11 +120,11 @@ def t_gate_fires_at_most_once():
                 return {"role": "assistant", "content": "SUMMARY: stopped."}
 
         r = loop.run("do it", cfg, chat_fn=fake, done_gate=gate)
-        check("second DONE accepted (escape hatch)", r.status == "done", r.status)
-        check("answer is the second DONE",
-              r.answer == "DONE: second, with my reason.", r.answer)
+        check("run completes after the cap", r.status == "done", r.status)
+        check("answer is the third DONE",
+              r.answer == "DONE: third, accepted.", r.answer)
         nudges = [s for s in r.steps if s.path == "nudge"]
-        check("exactly one gate nudge", len(nudges) == 1, str(len(nudges)))
+        check("exactly two gate nudges", len(nudges) == 2, str(len(nudges)))
     finally:
         shutil.rmtree(d)
 
@@ -219,8 +225,11 @@ def t_step2_that_never_reads_gets_pushed_back_and_uses_escape_hatch():
         check("run completes via escape hatch", r.status == "done", r.status)
         check("step 2 done", r.steps[1].status == "done")
         check("pushback reached the model", actor.pushback_seen)
-        check("step 2 needed two DONE attempts",
-              actor.step2_done_attempts == 2, str(actor.step2_done_attempts))
+        # Gate v2: the gate may push twice before its cap, so a model that
+        # neither reads nor explains needs three DONEs (two pushes, then
+        # the cap accepts). Under gate v1 this was two.
+        check("step 2 needed three DONE attempts",
+              actor.step2_done_attempts == 3, str(actor.step2_done_attempts))
         sub_steps = [a[1] for k, a in events if k == "step_sub"]
         check("gate nudge recorded in the sub-run",
               any(s.path == "nudge" for s in sub_steps))
@@ -257,6 +266,69 @@ def t_step2_reading_via_exec_cat_counts_as_grounded():
         shutil.rmtree(d)
 
 
+def t_gate_second_stage_read_but_changed_nothing():
+    # The exact sequence from Ansel's field record (run 20261002-192409):
+    # write the stub, DONE (stage 1: no read yet), read the source, DONE
+    # again with nothing changed. Gate v2 must fire its second stage there:
+    # "you read it but changed nothing." Only then: rewrite, DONE, accepted.
+    cfg, d = make_cfg()
+    try:
+        Path(d, "alpha.txt").write_text("a")
+        seen_marks = set()
+        state = {"task_seen": None, "phase": 0}
+        STAGE2_MARK = "have not changed anything"
+
+        def fake(messages, tool_defs):
+            if tool_defs is None and "Break the task" in messages[0]["content"]:
+                return {"role": "assistant", "content": PLAN2}
+            if tool_defs is None:
+                return {"role": "assistant", "content": "DONE: ok."}
+            text = "\n".join(m.get("content") or "" for m in messages)
+            if GATE_MARK in text:
+                seen_marks.add("stage1")
+            if STAGE2_MARK in text:
+                seen_marks.add("stage2")
+            task_msg = messages[1]["content"] if len(messages) > 1 else ""
+            if task_msg != state["task_seen"]:
+                state["task_seen"] = task_msg
+                state["phase"] = 0
+            phase = state["phase"]
+            state["phase"] += 1
+            if "You are executing step 1" in task_msg:
+                if phase == 0:
+                    return {"role": "assistant", "content": "Listing.",
+                            "tool_calls": [{"function": {"name": "list_dir",
+                                                         "arguments": {"path": "."}}}]}
+                return {"role": "assistant", "content": "DONE: listed."}
+            m = re.search(r"\.harness/runs/\S+/step-01\.md", task_msg)
+            script = [
+                {"role": "assistant", "content": "Writing stub.",
+                 "tool_calls": [{"function": {"name": "write_file",
+                                              "arguments": {"path": "summary.txt",
+                                                            "content": "stub"}}}]},
+                {"role": "assistant", "content": "DONE: written."},
+                {"role": "assistant", "content": "Reading source.",
+                 "tool_calls": [{"function": {"name": "read_file",
+                                              "arguments": {"path": m.group(0)}}}]},
+                {"role": "assistant", "content": "DONE: read it."},
+                {"role": "assistant", "content": "Rewriting for real.",
+                 "tool_calls": [{"function": {"name": "write_file",
+                                              "arguments": {"path": "summary.txt",
+                                                            "content": "real summary of alpha.txt"}}}]},
+                {"role": "assistant", "content": "DONE: redone."},
+            ]
+            return script[min(phase, len(script) - 1)]
+
+        r = planner.run_planned("summarize the files", cfg, chat_fn=fake)
+        check("staged run completes", r.status == "done", r.status)
+        check("stage 1 pushback seen", "stage1" in seen_marks, str(seen_marks))
+        check("stage 2 pushback seen", "stage2" in seen_marks, str(seen_marks))
+        check("final file is the rewrite",
+              Path(d, "summary.txt").read_text() == "real summary of alpha.txt")
+    finally:
+        shutil.rmtree(d)
+
+
 def t_step1_has_no_gate():
     r, actor, sub_steps, d = run_plan2("reads")
     try:
@@ -269,11 +341,12 @@ def t_step1_has_no_gate():
 
 
 if __name__ == "__main__":
-    for fn in [t_gate_blocks_first_done_then_accepts, t_gate_fires_at_most_once,
+    for fn in [t_gate_blocks_first_done_then_accepts, t_gate_capped_at_two_pushbacks,
                t_no_gate_no_change,
                t_step2_that_never_reads_gets_pushed_back_and_uses_escape_hatch,
                t_step2_that_reads_first_gets_no_pushback,
                t_step2_reading_via_exec_cat_counts_as_grounded,
+               t_gate_second_stage_read_but_changed_nothing,
                t_step1_has_no_gate]:
         fn()
     print("\nAll grounding gate tests passed.")

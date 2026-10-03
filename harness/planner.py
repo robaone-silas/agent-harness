@@ -72,6 +72,33 @@ def workspace_digest(workspace: str | None, limit: int = 100) -> str:
               "extensions, or categories that are not present.\n")
 
 
+_EXAMPLE_PLANS = """
+Example plans (copy the shape, not the content):
+
+Task: Make an index of the recipes in this folder
+Feature: Recipe index
+  Scenario: Step 1 - List the recipes
+    When I list the files in the folder
+    Then the output lists the recipe files
+  Scenario: Step 2 - Write the index
+    When I write recipe-index.md indexing the listed recipes
+    Then "recipe-index.md" covers the files from step 1
+
+Task: Move the 2025 meeting notes into an archive folder
+Feature: Archive meeting notes
+  Scenario: Step 1 - List the notes
+    When I list the files in the folder
+    Then the output lists the note files
+  Scenario: Step 2 - Create the archive folder
+    When I create the folder "archive"
+    Then "archive" exists
+  Scenario: Step 3 - Move one note
+    When I run: mv notes-2025-03.txt archive/
+    Then "archive/notes-2025-03.txt" exists
+
+"""
+
+
 def build_planner_prompt(task: str, tool_names: list[str],
                          workspace: str | None = None) -> str:
     idioms = _idiom_block(task)
@@ -114,7 +141,7 @@ Rules:
   the exact path, so a later step can read an earlier step's real output.
   Still never invent the values themselves in a Then.
 - Do NOT add verify or summarize scenarios — the harness handles finishing.
-- Return ONLY the Gherkin, no other text.
+{_EXAMPLE_PLANS}- Return ONLY the Gherkin, no other text.
 {idioms}{digest}Task: {task}"""
 
 

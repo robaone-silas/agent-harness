@@ -34,7 +34,7 @@ _BARE_PATH = re.compile(r"(?<![\w./-])([\w-]+(?:[./][\w.-]+)+)(?![\w.-])")
 # Phrasing that *tries* to be a machine check.
 _CHECKY = re.compile(
     r"""contains?\s+(exactly\s+)?["'`]|\bexists?\s*[.!]*$|does\s+not\s+exist|"""
-    r"""has\s+\d+\s+lines?|covers\s+the\s+files""",
+    r"""has\s+\d+\s+lines?|covers?\s+the\s+files""",
     re.IGNORECASE,
 )
 

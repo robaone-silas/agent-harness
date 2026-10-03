@@ -185,7 +185,12 @@ def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
 
 
 @verifier("covers",
-          rf"""^{_FILE}{_QPATH}\s+covers\s+the\s+files\s+"""
+          # Phrasing tolerance (field, 2026-10-03): the planner produced
+          # 'the contents of "organization.md" cover the files from step 1'
+          # live: an optional contents-of prefix and cover/covers both
+          # match. The anchors stay strict: a real path, "the files", and
+          # a step reference, whole-clause.
+          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+covers?\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
 def _v_covers(m: re.Match, ctx: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])

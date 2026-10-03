@@ -338,6 +338,28 @@ the planner's mechanics (it proposed moving files into a "new file
 named Finance" rather than a folder) and its phrasing precision (it
 reached for the `covers` idiom in the detailed-prompt run but wrote
 "cover the files", which the strict verifier pattern does not match,
-so the clause attested). Those are the next levers: plan examples for
-shape, and idiom patterns widened to the phrasings the planner
-actually produces.
+so the clause attested).
+
+Both levers named there were then pulled. The `covers` pattern now
+tolerates the phrasings the planner actually produces: an optional
+"the contents of" prefix, and "cover" alongside "covers"; the lint
+heuristic was widened to match, so a near-miss arrangement ("will
+cover the files") warns instead of attesting silently. The
+strictness that matters is kept: a real path, "the files", a step
+reference, whole clause. And the planner prompt now carries two
+short exemplar plans (an index that must cover its source listing;
+meeting notes archived into a folder created as a folder, moves
+verified by the destination path), introduced as "copy the shape,
+not the content", with content deliberately unlike real tasks.
+Rerunning the bare prompt: folders created as folders with `exists`
+checks, real `mv` steps each verified by their destination path,
+one category per actual file; ten of thirteen Thens check
+themselves. Two findings came with the win: plan lint's
+`dangling_file` does not credit an `mv` step with creating its
+destination path, so it errored on the very shape the example
+teaches (and, for the wrong reason, flagged one real gap: no step
+ever moved `organization.md` into its folder); and the
+detailed-prompt rerun did not adopt `covers` at all this time.
+Examples teach by proximity, not guarantee; the widened pattern is
+what makes the harness catch the idiom whenever the planner does
+write it.

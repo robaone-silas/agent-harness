@@ -121,6 +121,42 @@ def t_match_and_badge():
           verify.match_verifier('summary.txt covers the files listed in step 2') == "covers")
 
 
+def t_covers_phrasing_variants_from_the_field():
+    # The planner, taught the idiom, produced its own phrasing live
+    # (2026-10-03): "the contents of "organization.md" cover the files
+    # from step 1" — cover, not covers, with a contents-of prefix. The
+    # strict pattern missed it and the clause attested. The verifier
+    # must accept the phrasings the planner actually produces.
+    variants = [
+        'the contents of "organization.md" cover the files from step 1',
+        '"summary.txt" cover the files from step 1',
+        'contents of report.md covers the files listed by step 3',
+        'the content of "a.txt" covers the files from step 2',
+    ]
+    for v in variants:
+        check(f"variant matches: {v[:44]}", verify.match_verifier(v) == "covers",
+              str(verify.match_verifier(v)))
+    check("prose near-miss still attests",
+          verify.match_verifier(
+              "the document covers the files from step 1 in spirit") is None)
+
+
+def t_covers_field_phrasing_actually_verifies():
+    ctx, d = make_ctx({1: list(ITEMS)})
+    try:
+        Path(d, "summary.txt").write_text("a stub about organizing")
+        then = 'the contents of "summary.txt" cover the files from step 1'
+        res = verify.verify_step([then], ctx)
+        check("field phrasing is checked, not attested",
+              res.checks[0].verifier == "covers", res.checks[0].verifier)
+        check("field phrasing fails the stub", not res.ok)
+        Path(d, "summary.txt").write_text("alpha.txt beta.txt gamma.txt delta.txt")
+        res = verify.verify_step([then], ctx)
+        check("field phrasing passes real coverage", res.ok)
+    finally:
+        shutil.rmtree(d)
+
+
 def t_extract_items_from_listing_results():
     steps = [
         Step(n=1, thought="", tool="list_dir", args={"path": "."},
@@ -266,7 +302,9 @@ if __name__ == "__main__":
     for fn in [t_covers_passes_at_full_and_half, t_covers_fails_at_zero_with_missing_names,
                t_covers_fails_below_half, t_covers_deferral_phrase_fails_even_with_names,
                t_covers_no_items_fails_open_with_explanation, t_covers_missing_file_fails,
-               t_match_and_badge, t_extract_items_from_listing_results,
+               t_match_and_badge, t_covers_phrasing_variants_from_the_field,
+               t_covers_field_phrasing_actually_verifies,
+               t_extract_items_from_listing_results,
                t_stub_fails_coverage_then_retry_with_names_converts,
                t_empty_done_gets_computed_outline_line]:
         fn()

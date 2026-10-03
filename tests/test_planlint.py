@@ -137,6 +137,23 @@ def t_clean_plan_no_retry():
           str([s.lint for s in steps]))
 
 
+def t_covers_near_miss_warns_unparseable():
+    # planlint alignment with the widened verifier (2026-10-03): a Then
+    # that reaches for "cover the files" in an arrangement the verifier
+    # still cannot check ("will cover") must warn as an unparseable check
+    # rather than attest silently.
+    task = "Summarize the files in the folder"
+    steps = _steps(task, [
+        ("I list the files", "the list is recorded"),
+        ("I write summary.txt", "summary.txt will cover the files from step 1"),
+    ])
+    fs = planlint.lint_plan(task, steps)
+    warns = [f for f in fs if f.code == "unparseable_check"]
+    check("covers near-miss warns", len(warns) == 1,
+          f"{[(f.code, f.detail) for f in fs]}")
+    check("covers near-miss is on step 2", warns[0].step_id == 2, str(warns[0].step_id))
+
+
 def t_gherkin_still_validates_first():
     # Structural rejection still works and doesn't reach the lint.
     calls = []
@@ -154,6 +171,7 @@ def t_gherkin_still_validates_first():
 if __name__ == "__main__":
     for fn in [t_dangling_file, t_value_from_nowhere, t_value_grounded_in_task_passes,
                t_unparseable_check, t_consistent_hallucination_not_catchable,
+               t_covers_near_miss_warns_unparseable,
                t_good_plan_clean, t_lint_retry_integration, t_clean_plan_no_retry,
                t_gherkin_still_validates_first]:
         fn()

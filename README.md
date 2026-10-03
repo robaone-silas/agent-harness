@@ -369,3 +369,23 @@ time.
 Examples teach by proximity, not guarantee; the widened pattern is
 what makes the harness catch the idiom whenever the planner does
 write it.
+
+Tier 2 discovery (`--discover`) completes the discovery story. A
+model-planned pass runs first with the tool registry itself
+restricted to read-only tools (`list_dir`, `read_file`,
+`grep_files`), so a discovery step cannot write even if its plan
+says to; its steps are recorded like any run. The planner is then
+called again with excerpts of those records (bounded, truncation
+announced) as findings, under an instruction to base categories,
+values, and groupings on them. The plan written to `plan.feature`
+is the informed one; approval and execution are unchanged. First
+live run, the same bare organize prompt: discovery chose to read
+all four files' contents, and the resulting plan sorted them into
+Planning, Finance, and Documents with every `Then` checking
+itself. Two frictions recorded for tuning: the grounding gate,
+built for derivation steps, pushes twice on each independent
+discovery read (the model paid several extra turns re-reading its
+target before its DONE was accepted); and when the planner phrases
+moves as prose ("I move X into Y/") rather than `mv` commands, the
+lint's destination computation does not see them and `dangling_file`
+fires, the same literalism the `mv` fix addressed for commands.

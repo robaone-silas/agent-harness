@@ -56,12 +56,16 @@ def _extract_fallback(content: str) -> tuple[str, dict | None]:
     return thought, {"name": data["name"], "arguments": data.get("arguments", {})}
 
 
-def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None) -> RunResult:
+def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
+        only_tools=None) -> RunResult:
     """Run the agent loop. chat_fn(messages, tools) -> assistant message dict;
     inject a fake for tests. on_step(step) receives each Step for live display.
     done_gate(steps) -> str | None: consulted once before a DONE: is accepted;
     returning text pushes back with that message instead (the caller decides
-    what "ready to finish" requires — e.g. the planner's grounding gate)."""
+    what "ready to finish" requires — e.g. the planner's grounding gate).
+    only_tools: optional allowlist of tool names (v0.8.1 Tier 2 discovery
+    runs read-only: the registry itself is restricted, so a step cannot
+    write even if its instructions say to)."""
     chat_fn = chat_fn or (lambda messages, tool_defs: _client.chat(
         cfg.endpoint, cfg.model, messages,
         tools=_client.to_ollama_tools(tool_defs) if tool_defs else None,
@@ -71,6 +75,8 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None) -> RunResult
     jail = _tools.Jail(cfg.workspace)
     registry = _tools.make_tools(jail, cfg.blocked_substrings, cfg.exec_timeout,
                                  cfg.max_output_chars)
+    if only_tools is not None:
+        registry = {k: v for k, v in registry.items() if k in only_tools}
     tool_defs = [{k: d[k] for k in ("name", "description", "parameters")}
                  for d in registry.values()]
 

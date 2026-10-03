@@ -4,6 +4,7 @@
 Modes:
   python3 run.py "task"              direct loop (no planning)
   python3 run.py "task" --plan       propose a Gherkin plan -> plan.feature, stop for review
+  python3 run.py "task" --discover   read-only discovery pass, then propose the plan -> plan.feature
   python3 run.py --run plan.feature  execute an approved plan
   python3 run.py "task" --auto       plan and execute in one go (no approval)
 """
@@ -95,6 +96,8 @@ def main() -> int:
     if args.run:
         return run_feature(cfg, args.run, stamp)
     task = args.task
+    if args.discover:
+        return run_discover(cfg, task)
     if args.plan:
         return propose_plan(cfg, task)
     if args.auto:
@@ -102,9 +105,24 @@ def main() -> int:
     return run_direct(cfg, task, stamp)
 
 
-def propose_plan(cfg, task) -> int:
+def run_discover(cfg, task) -> int:
+    """Tier 2: read-only discovery pass first, then propose the plan with
+    the findings in hand. Stops at plan.feature for review, like --plan."""
+    print("discovery pass (read-only tools only):")
+    text, result, info = _planner.plan_with_discovery(
+        task, cfg, on_event=show_event)
+    if info.get("discovery_run_id"):
+        print(f"discovery records: .harness/runs/{info['discovery_run_id']} "
+              f"(status: {info['discovery_status']})\n")
+    if text is None:
+        print(f"could not produce a valid plan: {result}")
+        return 2
+    return propose_plan(cfg, task, planned=(text, result))
+
+
+def propose_plan(cfg, task, planned=None) -> int:
     """Ask the model for a Gherkin plan, write plan.feature, stop for review."""
-    text, result = _planner.propose(task, cfg)
+    text, result = planned if planned is not None else _planner.propose(task, cfg)
     if text is None:
         print(f"could not produce a valid plan: {result}")
         return 2

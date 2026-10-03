@@ -44,6 +44,10 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
     p.add_argument("--plan", action="store_true",
                    help="Propose a Gherkin plan, write it to plan.feature, and stop "
                         "for human review/editing. Does not execute.")
+    p.add_argument("--discover", action="store_true",
+                   help="Tier 2: run a read-only discovery pass first, then "
+                        "propose the plan with the findings in hand (writes "
+                        "plan.feature and stops, like --plan).")
     p.add_argument("--run", metavar="FEATURE",
                    help="Execute an approved .feature plan file.")
     p.add_argument("--auto", action="store_true",

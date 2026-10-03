@@ -100,9 +100,16 @@ Feature: Archive meeting notes
 
 
 def build_planner_prompt(task: str, tool_names: list[str],
-                         workspace: str | None = None) -> str:
+                         workspace: str | None = None,
+                         discovery: str = "") -> str:
     idioms = _idiom_block(task)
     digest = workspace_digest(workspace)
+    if discovery:
+        digest += ("\nDiscovery findings (from a read-only discovery pass "
+                   "the harness just ran):\n" + discovery
+                   + "\nBase the plan's categories, values, and groupings on "
+                     "these findings, not on assumptions about what such a "
+                     "workspace usually contains.\n")
     return f"""You are a planner. Break the task below into a short sequence of small steps.
 Write the plan in Gherkin — one Scenario per step, in order.
 
@@ -185,7 +192,8 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
     return steps
 
 
-def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config
+def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
+                 discovery: str = ""
                  ) -> tuple[str | None, list[PlanStep] | str]:
     """Ask the model for a Gherkin plan; retry with rejections explained.
 
@@ -196,7 +204,8 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config
     from . import planlint as _planlint
     messages = [{"role": "user",
                  "content": build_planner_prompt(task, tool_names,
-                                                 workspace=cfg.workspace)}]
+                                                 workspace=cfg.workspace,
+                                                 discovery=discovery)}]
     last_problem = "no response"
     for attempt in (1, 2):
         try:
@@ -250,6 +259,124 @@ def propose(task: str, cfg: Config, chat_fn=None
     steps) or (None, error_string)."""
     chat_fn, jail, registry = _chat_and_tools(cfg, chat_fn)
     return request_plan(task, list(registry), chat_fn, cfg)
+
+
+# ------------------------------------------------------- Tier 2 discovery
+#
+# Some plans cannot be written well until someone has looked: the task's
+# categories, values, or structure depend on what the workspace actually
+# contains. Tier 1 (the digest) covers names and sizes. Tier 2 runs a
+# model-planned discovery pass first, restricted at the registry level
+# to read-only tools so it cannot change anything, stores its records
+# like any run, and then plans again with the findings in the prompt.
+# The plan the human approves is the informed one.
+
+READ_ONLY_TOOLS = ("list_dir", "read_file", "grep_files")
+
+
+def build_discovery_prompt(task: str, workspace: str | None = None) -> str:
+    digest = workspace_digest(workspace)
+    return f"""You are planning a read-only discovery pass. The task below
+cannot be planned well yet: the planner first needs facts about the
+workspace. Write a short Gherkin plan, 1 to 4 steps, whose steps only
+LOOK at things. Discovery changes nothing.
+
+Format:
+Feature: <short title>
+  Scenario: Step 1 - <short name>
+    When <one concrete look: list, read, or search>
+    Then <what will be known after this step>
+
+Available discovery tools: {", ".join(READ_ONLY_TOOLS)}.
+Rules:
+- Only list, read, and search. No writes, no moves, no commands.
+- Each step learns something the real plan needs: what files exist,
+  what the important ones contain, how things are structured.
+- Read the files most likely to decide the plan's categories or values;
+  do not read everything.
+- Return ONLY the Gherkin, no other text.
+{digest}Task: {task}"""
+
+
+def request_discovery_plan(task: str, cfg: Config, chat_fn
+                           ) -> tuple[str | None, list[PlanStep] | str]:
+    """Ask the model for a read-only discovery plan; one retry on a
+    structural rejection, mirroring request_plan's shape (no lint:
+    discovery steps make no commitments worth linting)."""
+    messages = [{"role": "user",
+                 "content": build_discovery_prompt(task,
+                                                   workspace=cfg.workspace)}]
+    last_problem = "no response"
+    for attempt in (1, 2):
+        try:
+            msg = chat_fn(messages, None)
+        except Exception as e:
+            return None, f"discovery planner call failed: {e}"
+        content = (msg.get("content") or "").strip()
+        plan, err = gherkin.parse_feature(content)
+        if plan is not None:
+            return content, to_plan_steps(plan)
+        last_problem = err
+        messages.append({"role": "assistant", "content": content})
+        messages.append({"role": "user", "content":
+                         f"That plan was rejected: {err}. "
+                         "Return ONLY the corrected Gherkin, no other text."})
+    return None, last_problem
+
+
+def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
+                            total_cap: int = 8000,
+                            per_step_cap: int = 2500) -> str:
+    """The findings handed to the replan: excerpts of the discovery run's
+    stored step records (tool results verbatim, where the facts live),
+    bounded so discovery cannot become context-stuffing. Truncation is
+    announced with a pointer to the full record."""
+    from pathlib import Path
+    if not run_id:
+        return ""
+    parts: list[str] = []
+    used = 0
+    for i in range(1, n_steps + 1):
+        rel = f".harness/runs/{run_id}/step-{i:02d}.md"
+        p = Path(workspace) / rel
+        if not p.is_file():
+            continue
+        text = p.read_text(errors="replace")
+        if len(text) > per_step_cap:
+            text = text[:per_step_cap] + f"\n[truncated; full record: {rel}]"
+        if used + len(text) > total_cap:
+            text = text[:max(0, total_cap - used)]
+        if text:
+            parts.append(text)
+            used += len(text)
+        if used >= total_cap:
+            break
+    return "\n\n".join(parts)
+
+
+def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
+                        ) -> tuple[str | None, list[PlanStep] | str, dict]:
+    """Tier 2: discovery pass, then the real plan written with the
+    findings in hand. Returns (gherkin_text, steps, info) or
+    (None, error, info); info carries the discovery run id, its status,
+    and the findings text. A failed discovery execution still replans
+    with whatever findings completed steps produced."""
+    chat_fn, jail, registry = _chat_and_tools(cfg, chat_fn)
+    dtext, dsteps = request_discovery_plan(task, cfg, chat_fn)
+    if dtext is None:
+        return None, dsteps, {"discovery_run_id": "",
+                              "discovery_status": "plan_failed",
+                              "findings": ""}
+    run = execute_plan(task, dsteps, cfg, chat_fn=chat_fn,
+                       on_event=on_event, only_tools=list(READ_ONLY_TOOLS))
+    findings = discovery_findings_text(cfg.workspace, run.run_id, len(dsteps))
+    text, steps = request_plan(task, list(registry), chat_fn, cfg,
+                               discovery=findings)
+    info = {"discovery_run_id": run.run_id,
+            "discovery_status": run.status,
+            "findings": findings,
+            "discovery_steps": dsteps}
+    return text, steps, info
 
 
 @dataclass
@@ -375,7 +502,7 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep]):
 
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                      cfg: Config, chat_fn, jail, emit,
-                     store=None) -> bool:
+                     store=None, only_tools=None) -> bool:
     """Run one plan step; after the sub-run reports DONE, verify the Then
     clauses in code before advancing. A failed verification warns and retries
     the step once (bounded by cfg.verify_retries) with the exact failure as
@@ -456,7 +583,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         try:
             r = loop.run(prompt, sub_cfg, chat_fn=chat_fn,
                          on_step=lambda s: emit("step_sub", step, s),
-                         done_gate=gate)
+                         done_gate=gate, only_tools=only_tools)
         except Exception as e:
             step.status = "failed"
             step.result = f"harness error: {e}"
@@ -500,7 +627,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
 
 
 def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
-                 on_event=None) -> PlannedRun:
+                 on_event=None, only_tools=None) -> PlannedRun:
     """Execute an approved plan, one scoped step at a time. on_event(kind, *args)
     reports ("step_start", step), ("step_sub", step, sub), ("step_verify", step,
     StepVerify), ("step_verify_waived", step, StepVerify), ("step_done", step),
@@ -523,7 +650,8 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
     for step in steps:
         emit("step_start", step)
         if not _run_step_verified(task, step, steps,
-                                  cfg, chat_fn, jail, emit, store=store):
+                                  cfg, chat_fn, jail, emit, store=store,
+                                  only_tools=only_tools):
             break
 
     status = "done" if steps and all(s.status == "done" for s in steps) else "step_failed"

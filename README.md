@@ -312,3 +312,32 @@ with no summary text, the next step's outline no longer carries an
 empty Result line. The harness computes one from its own record:
 the tools the step used and how many lines of output they produced.
 The summary channel can stay terse without going silent.
+
+Two papercuts from the same live session, fixed: `--task-file` read
+the task into a local variable that never reached the caller, so the
+planner planned for no task at all ("No Task Provided"); the resolved
+task now comes back on the args namespace where `run.py` reads it.
+And the step prompt's stored-at line ("Your full output will be
+stored at...") read as a write instruction to the model, which duly
+wrote its deliverable into its own record file; the line now says the
+harness does the storing and the model should not write there.
+
+Last, Tier 1 discovery: planning no longer starts blind. The bare
+prompt "organize files in this folder by category" produced a plan
+from the model's priors, category folders for `.pdf` and `.jpg` files
+in a folder containing neither, the real files (`.txt`, `.csv`, `.md`)
+addressed by no step. The harness now lists the workspace itself
+(names, kinds, sizes; no content read, no model calls, `.harness/`
+never listed, capped with the truncation announced) and puts that
+digest in the planner prompt with a plain instruction: plan against
+what is actually here, do not invent files, extensions, or
+categories. Rerunning the same bare prompt against the same folder
+produced categories drawn from the real inventory (Finance, Planning,
+Admin) and steps naming the real files. What the digest does not fix:
+the planner's mechanics (it proposed moving files into a "new file
+named Finance" rather than a folder) and its phrasing precision (it
+reached for the `covers` idiom in the detailed-prompt run but wrote
+"cover the files", which the strict verifier pattern does not match,
+so the clause attested). Those are the next levers: plan examples for
+shape, and idiom patterns widened to the phrasings the planner
+actually produces.

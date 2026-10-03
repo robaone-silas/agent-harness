@@ -60,6 +60,11 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
     if not task and not args.run:
         p.error("provide a task as an argument or via --task-file "
                 "(or --run an approved .feature file)")
+    # Callers read the task back off the namespace (run.py uses args.task),
+    # so the resolved text, file content included, is what they must get.
+    # (Field bug 2026-10-03: this hand-back was missing and --task-file
+    # silently planned for no task at all.)
+    args.task = task
 
     cfg = Config(
         model=args.model,

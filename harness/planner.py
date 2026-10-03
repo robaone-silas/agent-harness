@@ -27,8 +27,55 @@ from . import loop
 from .config import Config
 
 
-def build_planner_prompt(task: str, tool_names: list[str]) -> str:
+def workspace_digest(workspace: str | None, limit: int = 100) -> str:
+    """Deterministic pre-planning discovery (Tier 1, v0.8.1): the harness
+    lists the workspace itself and shows the planner what is actually
+    there, so plans are written against real files instead of the model's
+    priors (field, 2026-10-03: a bare "organize by category" prompt got
+    category folders for .pdf/.jpg files in a folder containing neither).
+
+    Names, kinds, and sizes only: no content is read, no model calls.
+    `.harness/` bookkeeping is never listed. Returns "" when no listing
+    can be made: discovery must never block planning."""
+    from pathlib import Path
+    if not workspace:
+        return ""
+    try:
+        entries = sorted(Path(workspace).iterdir(), key=lambda p: p.name)
+    except OSError:
+        return ""
+    lines: list[str] = []
+    total = 0
+    for p in entries:
+        if p.name == ".harness":
+            continue
+        total += 1
+        if len(lines) >= limit:
+            continue
+        if p.is_dir():
+            lines.append(f"- {p.name}/ (folder)")
+        else:
+            try:
+                size = p.stat().st_size
+            except OSError:
+                size = 0
+            lines.append(f"- {p.name} ({size} bytes)")
+    if total == 0:
+        body = "(the workspace folder is currently empty)"
+    else:
+        body = "\n".join(lines)
+        if total > len(lines):
+            body += f"\n- ... and {total - len(lines)} more entries"
+    return ("\nWorkspace contents right now (listed by the harness itself):\n"
+            + body
+            + "\nPlan against what is actually here: do not invent files, "
+              "extensions, or categories that are not present.\n")
+
+
+def build_planner_prompt(task: str, tool_names: list[str],
+                         workspace: str | None = None) -> str:
     idioms = _idiom_block(task)
+    digest = workspace_digest(workspace)
     return f"""You are a planner. Break the task below into a short sequence of small steps.
 Write the plan in Gherkin — one Scenario per step, in order.
 
@@ -68,8 +115,7 @@ Rules:
   Still never invent the values themselves in a Then.
 - Do NOT add verify or summarize scenarios — the harness handles finishing.
 - Return ONLY the Gherkin, no other text.
-{idioms}
-Task: {task}"""
+{idioms}{digest}Task: {task}"""
 
 
 def _idiom_block(task: str) -> str:
@@ -122,7 +168,8 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config
     Returns (gherkin_text, steps) or (None, error_string)."""
     from . import planlint as _planlint
     messages = [{"role": "user",
-                 "content": build_planner_prompt(task, tool_names)}]
+                 "content": build_planner_prompt(task, tool_names,
+                                                 workspace=cfg.workspace)}]
     last_problem = "no response"
     for attempt in (1, 2):
         try:
@@ -366,8 +413,13 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
         if store is not None and step.output_path:
-            prompt += (f"Your full output will be stored at {step.output_path} "
-                       f"for later steps.\n")
+            # Wording matters (field, 2026-10-03): "Your full output will be
+            # stored at..." read as a write instruction and a step wrote its
+            # deliverable into its own record file. Say who does the storing.
+            prompt += (f"The harness will store your full output at "
+                       f"{step.output_path} for later steps. Do not write to "
+                       f"that file yourself; the harness writes it after you "
+                       f"finish.\n")
         if feedback:
             prompt += (f"Your previous attempt failed verification: {feedback} "
                        f"Fix exactly this and try again.\n")

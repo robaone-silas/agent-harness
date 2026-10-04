@@ -47,7 +47,8 @@ def show_event(kind, *args, quiet=False):
         steps = args[0]
         print(f"plan ({len(steps)} steps):")
         for s in steps:
-            print(f"  {s.id}. {s.instruction} [done when: {s.done_when}]")
+            budget = f" [budget: {s.budget} turns]" if getattr(s, "budget", 0) else ""
+            print(f"  {s.id}. {s.instruction} [done when: {s.done_when}]{budget}")
     elif kind == "step_start":
         print(f"\n=== step {args[0].id}: {args[0].instruction} ===")
     elif kind == "step_sub":

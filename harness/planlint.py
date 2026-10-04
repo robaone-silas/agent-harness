@@ -33,6 +33,20 @@ Checks:
                      times six). Completeness expressed that way matches
                      no verifier and rests entirely on trust; the covers
                      clause is the machine-checkable form.
+  unaccounted_file   (WARN, workspace-aware): under narrow exhaustive
+                     cues (a list, inventory, index, or catalogue task,
+                     or all/every/each of the files), a workspace root
+                     file mentioned nowhere in the task or plan, in a
+                     plan that neither generically lists the workspace
+                     nor uses a covers clause (field, issue #6: Tomas's
+                     water-heater-manual.txt, named nowhere and silently
+                     dropped). Needs the workspace root file set; lint
+                     without it stays workspace-blind for this check.
+  deliverable_clarity (WARN): list, inventory, report, or index language
+                     names no output file and declares no answer-only
+                     result, so nobody can tell whether the deliverable
+                     is a file to open or words in an answer (field,
+                     issue #6: Tomas's plan named no deliverable at all).
 """
 from __future__ import annotations
 
@@ -64,6 +78,52 @@ _PER_ITEM_CONTAINS = re.compile(
 # A step whose When lists files (the source set a later deliverable is
 # derived from).
 _LISTING = re.compile(r"\blist(?:s|ing|ed)?\b", re.IGNORECASE)
+# A step that generically lists the workspace itself, as opposed to a
+# step that merely creates "a list" of something: the list verb must sit
+# close to the thing listed (files, workspace, folder, contents), or
+# the step must name the list_dir tool. Tomas's "I compile a list of
+# house papers ... from the files read in step 1" is a deliverable
+# step, not a listing step, and must not count here.
+_GENERIC_LISTING = re.compile(
+    r"\blist(?:s|ing|ed)?\b[^.\n]{0,25}\b(?:files?|workspace|folder|"
+    r"director\w+|contents)\b|\blist_dir\b",
+    re.IGNORECASE,
+)
+# Narrow exhaustive cues in the task: the same cue set the discovery
+# prompt treats as exhaustive (planner._is_exhaustive_task). A list,
+# inventory, index, or catalogue, or all/every/each of the files,
+# documents, papers, or records, makes every root file potentially in
+# scope; category, strategy, and value tasks carry none of these cues
+# and keep sampling, so they never warn here.
+_EXHAUSTIVE_TASK = re.compile(
+    r"\b(?:list|listing|inventory|index|catalogue|catalog)\b|"
+    r"\b(?:all|every|each)\b[^.\n]{0,40}"
+    r"\b(?:files?|documents?|papers?|records?)\b",
+    re.IGNORECASE,
+)
+# Task language that promises a deliverable artifact of some kind.
+_DELIVERABLE_TASK = re.compile(
+    r"\b(?:list|listing|inventory|inventories|report|reports|index|"
+    r"indexes|indexing)\b",
+    re.IGNORECASE,
+)
+# An explicit declaration that the result lives in the answer, not in
+# a file. That is a legitimate deliverable choice; it just has to be
+# stated, not left ambiguous.
+_ANSWER_ONLY = re.compile(
+    r"answer[- ]only|in (?:your|the) (?:answer|reply|response)\b|"
+    r"\bno (?:output )?file\b|without (?:creating|writing|making) a file|"
+    r"do(?:es)? not (?:create|write) a file|"
+    r"don['’]t (?:create|write) a file",
+    re.IGNORECASE,
+)
+# Verbs that produce a file in a step's When. A file a step mentions
+# while writing is a candidate output; a file a step only reads is not.
+_WRITE_VERB = re.compile(
+    r"\b(?:writ\w*|creat\w*|sav\w*|produc\w*|compil\w*|generat\w*|"
+    r"draft\w*)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -174,17 +234,123 @@ def _per_item_covers_finding(step_id: int, listing_id: int,
     return None
 
 
-def lint_plan(task: str, steps: list) -> list[LintFinding]:
-    """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when)."""
+def _workspace_file_set(workspace_files) -> set[str] | None:
+    """Normalize the optional workspace root file set for lint_plan.
+
+    Accepts an iterable of root file names (or paths, whose final
+    component is the root name) or a single workspace directory path,
+    in which case the root regular files are read from disk, matching
+    the digest's view: folders and `.harness/` bookkeeping never
+    count. None means the caller supplied no workspace information,
+    and the workspace-aware check stays off."""
+    if workspace_files is None:
+        return None
+    import os
+    from pathlib import Path
+    if isinstance(workspace_files, (str, os.PathLike)):
+        p = Path(workspace_files)
+        if p.is_dir():
+            try:
+                return {e.name for e in p.iterdir()
+                        if e.name != ".harness" and e.is_file()}
+            except OSError:
+                return set()
+        return set()
+    out: set[str] = set()
+    for item in workspace_files:
+        name = str(item).replace("\\", "/").rstrip("/")
+        name = name.rsplit("/", 1)[-1] if "/" in name else name
+        if name and name != ".harness":
+            out.add(name)
+    return out
+
+
+def _plan_text(task: str, steps: list) -> str:
+    """Everything the task and plan say, for mention searches."""
+    parts = [task or ""]
+    for s in steps:
+        parts.append("\n".join([
+            getattr(s, "instruction", "") or "",
+            getattr(s, "done_when", "") or "",
+            getattr(s, "given", "") or "",
+            getattr(s, "title", "") or "",
+            getattr(s, "intent", "") or ""]))
+    return "\n".join(parts)
+
+
+def _workspace_warnings(task: str, steps: list, workspace_set,
+                        generic_listing: bool, covers_any: bool,
+                        output_files: set) -> list[LintFinding]:
+    """The two workspace-aware warnings (issue #6, repair step 5).
+
+    Both are warnings, never errors: an unaccounted file can be
+    legitimately irrelevant, and an answer-only deliverable can be
+    exactly what the user wanted. The lint's job is to make the
+    choice visible at approval time, not to block it."""
+    if not steps:
+        return []
+    findings: list[LintFinding] = []
+    last_id = steps[-1].id
+    if workspace_set and _EXHAUSTIVE_TASK.search(task or "") \
+            and not generic_listing and not covers_any:
+        corpus = _plan_text(task, steps)
+        for name in sorted(workspace_set):
+            if name not in corpus:
+                findings.append(LintFinding(
+                    last_id, "warn", "unaccounted_file",
+                    f"Plan: the workspace file '{name}' is mentioned "
+                    f"nowhere in the task or the plan, and the plan "
+                    f"neither lists the workspace nor uses a covers "
+                    f"clause. Under this task every root file is "
+                    f"potentially in scope, so '{name}' is "
+                    f"unaccounted for: include it, or exclude it "
+                    f"explicitly."))
+    cue = _DELIVERABLE_TASK.search(task or "")
+    if cue and not output_files \
+            and not _ANSWER_ONLY.search(_plan_text(task, steps)):
+        findings.append(LintFinding(
+            last_id, "warn", "deliverable_clarity",
+            f"Plan: the task asks for a {cue.group(0).lower()}, but "
+            f"no step names an output file and the plan does not "
+            f"declare an answer-only result. Name the deliverable "
+            f"file the user should open, or state explicitly that "
+            f"the result is answer-only."))
+    return findings
+
+
+def lint_plan(task: str, steps: list,
+              workspace_files=None) -> list[LintFinding]:
+    """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when).
+
+    `workspace_files` optionally gives lint the workspace root file
+    set: an iterable of root file names, or a workspace directory
+    path. Without it, the unaccounted_file check cannot run and lint
+    stays workspace-blind, exactly as before."""
+    workspace_set = _workspace_file_set(workspace_files)
     findings: list[LintFinding] = []
     known: set[str] = set(_mentions(task))  # files the task itself names
     whens: list[str] = [task or ""]
     listing_ids: list[int] = []  # earlier steps whose When lists files
+    generic_listing = False  # a step generically lists the workspace
+    covers_any = False  # a step's Then uses a covers clause
+    output_files: set[str] = set()  # files the plan names as deliverables
     for s in steps:
         known |= _mentions(s.instruction)
         known |= _move_destinations(s.instruction)
+        output_files |= _move_destinations(s.instruction)
+        if _WRITE_VERB.search(s.instruction or ""):
+            # Files a writing step mentions are candidate outputs,
+            # except the workspace's own source files: reading every
+            # source into a write step does not make them deliverables.
+            mentioned = _mentions(s.instruction)
+            if workspace_set is not None:
+                mentioned -= workspace_set
+            output_files |= mentioned
         known |= _mentions(s.given)
         whens.append(s.instruction or "")
+        if _GENERIC_LISTING.search(s.instruction or "") \
+                or _GENERIC_LISTING.search(s.done_when or ""):
+            generic_listing = True
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
         per_item: dict[str, int] = {}
         covers_targets: set[str] = set()
@@ -204,6 +370,11 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
             _name, path, value = parsed
             if _name == "covers" and path:
                 covers_targets.add(path)
+                covers_any = True
+            if path:
+                # A file a Then checks is a named deliverable target,
+                # whatever the verifier: exists, contains, covers.
+                output_files.add(path)
             if path and path not in known:
                 findings.append(LintFinding(
                     s.id, "error", "dangling_file",
@@ -227,4 +398,7 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
     drift = _intent_drift(task, steps)
     if drift is not None:
         findings.append(drift)
+    findings.extend(_workspace_warnings(
+        task, steps, workspace_set, generic_listing, covers_any,
+        output_files))
     return findings

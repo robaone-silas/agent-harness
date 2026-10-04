@@ -158,6 +158,10 @@ Rules:
 - Do not substitute one `contains` Then per source file for `covers` on
   a document derived from a listing. Per-file clauses cannot prove the
   document covers the listing; use the single `covers` clause instead.
+- Each step runs under a turn budget that scales with the operations it
+  implies: by default a base of 6 turns, plus one turn per file it must
+  read beyond that, up to a maximum of 24. If a step would need more
+  than the maximum, split it into two steps.
 - Preserve the task's intent in every step. When the task specifies what a
   deliverable must contain or be like (for example: each entry gives a name
   and a one-line description), give every step that contributes to that
@@ -208,6 +212,7 @@ class PlanStep:
     output_path: str = ""  # .harness/runs/<run>/step-NN.md (v0.8.1, issue #2)
     source_items: list = field(default_factory=list)  # names this step produced (v0.8.1 covers)
     tool_summary: str = ""  # harness-computed "tools used; output size" line
+    budget: int = 0  # effective turn budget for this step (issue #14)
 
 
 def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
@@ -226,7 +231,43 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
             title=(p.title or "")[:120],
             intent=(p.intent or "")[:300],
         ))
+    for s in steps:
+        s.budget = step_budget(s, steps)
     return steps
+
+
+# Dynamic per-step budgets (issue #14): a flat cap judged every step
+# against the same number of turns no matter how much work its own plan
+# implied, so a compile step needing 7 reads, a write, and the final
+# answer died against a cap of 6 with its deliverable unwritten. The
+# budget now counts the planned operations deterministically: every
+# distinct file operand the step names, plus, for each earlier step it
+# draws on, one turn to read that step's stored record and one turn per
+# source item that step produced, plus slack for the write and the
+# final answer. Floored at the configured base, capped at the ceiling;
+# the repeat-call breaker, the error limits, and the pushback refunds
+# still bound a step that wanders instead of working.
+_BUDGET_SLACK = 2
+
+
+def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
+    """Effective turn budget for one plan step, from its planned work."""
+    import re as _re
+    base = getattr(cfg, "step_max_steps", 6) if cfg is not None else 6
+    ceiling = (getattr(cfg, "step_budget_ceiling", 24)
+               if cfg is not None else 24)
+    text = "\n".join([step.given or "", step.intent or "",
+                      step.instruction or "", step.done_when or ""])
+    operands = {t for t in _re.findall(r'"([^"\n]+)"', text)
+                if t.strip() and not any(c.isspace() for c in t)}
+    ops = len(operands)
+    by_id = {s.id: s for s in steps}
+    for ref in {int(m) for m in _re.findall(r"step\s+(\d+)", text,
+                                            flags=_re.IGNORECASE)}:
+        prior = by_id.get(ref)
+        if prior is not None and prior.id < step.id:
+            ops += 1 + len(prior.source_items or [])
+    return max(base, min(ceiling, ops + _BUDGET_SLACK))
 
 
 def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
@@ -535,7 +576,7 @@ class PlannedRun:
         return {"run_id": self.run_id,
                 "steps": [
             {"id": s.id, "instruction": s.instruction, "done_when": s.done_when,
-             "intent": s.intent,
+             "intent": s.intent, "budget": s.budget,
              "status": s.status, "result": s.result[:500],
              "verify": s.verify, "lint": s.lint,
              "verify_waived": s.verify_waived,
@@ -726,6 +767,11 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)
+    # Issue #14: this step's turn budget is computed from its planned
+    # operations now that prior steps' source items are known, and the
+    # same budget governs the verification retry.
+    step.budget = step_budget(step, steps, cfg)
+    sub_cfg = replace(cfg, max_steps=step.budget)
 
     def persist(status: str):
         if attempts:
@@ -779,7 +825,6 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                        f"Fix exactly this and try again.\n")
         prompt += 'When this step is complete, answer starting with "DONE:".'
 
-        sub_cfg = replace(cfg, max_steps=cfg.step_max_steps)
         try:
             r = loop.run(prompt, sub_cfg, chat_fn=chat_fn,
                          on_step=lambda s: emit("step_sub", step, s),

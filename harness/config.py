@@ -18,6 +18,8 @@ class Config:
     # the effective budget scales with a step's counted planned operations)
     step_budget_ceiling: int = 24  # hard cap for the dynamic step budget
     verify_retries: int = 1  # per-step Then-verification retries (v0.7)
+    graph_contracts: bool = False  # step prompts carry their plan-graph
+    # node contract (inputs with producers, required outputs); experiment
     request_timeout: int = 180
     exec_timeout: int = 30
     max_output_chars: int = 2000
@@ -58,6 +60,10 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
                    help="Execute an approved .feature plan file.")
     p.add_argument("--auto", action="store_true",
                    help="Plan and execute in one go (no approval step).")
+    p.add_argument("--graph-contracts", action="store_true",
+                   help="Execution prompts carry each step's plan-graph "
+                        "node contract (inputs with producers, required "
+                        "outputs). Experimental; default off.")
     p.add_argument("--temperature", type=float, default=0.2)
     p.add_argument("--trace", default=None, help="Write step trace JSONL here.")
     p.add_argument("--quiet", action="store_true", help="Only print the final answer.")
@@ -86,5 +92,6 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
         temperature=args.temperature,
         trace_path=args.trace,
         quiet=args.quiet,
+        graph_contracts=args.graph_contracts,
     )
     return cfg, args

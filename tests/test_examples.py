@@ -43,8 +43,8 @@ def t_examples_present_with_intent():
     check("examples carry the copy-shape instruction",
           "shape, not" in p and "content" in p.split("shape, not")[1][:20], p[:200])
     check("recipe example present", "recipe-index.md" in p)
-    check("covers sits on the deliverable step in the example",
-          '"recipe-index.md" covers the files from step 1' in p)
+    check("completeness clause sits on the deliverable step in the example",
+          '"recipe-index.md" indexes the files from step 1' in p)
     check("archive example present", "notes-2025-03.txt" in p)
     check("folder created as a folder in the example",
           '"archive" exists' in p)

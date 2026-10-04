@@ -8,7 +8,10 @@ The rule: a listing step followed by a step carrying at least two
 unmatched per-item containment Then clauses against the same target,
 with no covers clause for that target, is a retryable ERROR whose
 feedback tells the planner to replace the per-item clauses with
-`"<target>" covers the files from step N`.
+`"<target>" covers the files from step N`. (Since the covers-to-
+indexes push, 2026-10-04, the fully fixed endpoint for a describe-
+each compile like this one is the `indexes` clause: the per-item
+rule accepts either, and FIXED_PLAN below uses `indexes`.)
 
 Run: python3 tests/test_covers_lint.py
 """
@@ -54,7 +57,7 @@ FIXED_PLAN = """Feature: Create file audit index
   Scenario: Step 2 - Create the audit index
     Intent: create audit-index.md listing every file with its exact filename and a one-line description of what it actually contains, without omitting any file
     When I read each file from step 1 and write audit-index.md with the filename and a one-line description of its content
-    Then "audit-index.md" covers the files from step 1
+    Then "audit-index.md" indexes the files from step 1
 """
 
 CODE = "per_item_instead_of_covers"
@@ -94,9 +97,9 @@ def t_priya_fixture_fixed_plan_clean():
     plan, err = gherkin.parse_feature(FIXED_PLAN)
     check("fixed plan parses", plan is not None, str(err))
     fs = planlint.lint_plan(PRIYA_TASK, to_plan_steps(plan))
-    check("covers plan: rule silent", _rule_findings(fs) == [],
+    check("fixed plan: rule silent", _rule_findings(fs) == [],
           f"{[(f.code, f.detail) for f in fs]}")
-    check("covers plan: no errors",
+    check("fixed plan: no errors",
           [f for f in fs if f.level == "error"] == [],
           f"{[(f.code, f.detail) for f in fs]}")
 

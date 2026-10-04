@@ -38,6 +38,9 @@ class VerifyContext:
     # from that step's listing-shaped tool results). Lets a verifier judge
     # a deliverable against the actual source data, not just the plan.
     prior_items: dict = field(default_factory=dict)
+    # Issue #17 part 2: the covers step's Intent line. An exhaustive cue
+    # here makes covers strict just as one in the task does.
+    intent: str = ""
 
 
 @dataclass
@@ -102,6 +105,29 @@ def _deferral_in(text: str) -> str | None:
         if m:
             return m.group(0)
     return None
+
+
+# Exhaustive cues for strict covers (issue #17, part 2): language that
+# makes completeness, not sampling, the stated contract. Deliberately
+# narrow, the phrases named in the issue: every file, all files, do not
+# omit, each entry/file, no omissions (plus their closest variants).
+# Summaries and strategy documents carry none of these and keep the
+# at-least-half covers floor.
+_EXHAUSTIVE_CUES = [re.compile(p, re.IGNORECASE) for p in (
+    r"\bevery\s+(?:file|entry|document|paper|record)s?\b",
+    r"\ball\s+(?:the\s+)?(?:file|entry|document|paper|record)s\b",
+    r"\bdo\s+not\s+omit\b", r"\bdon['’]t\s+omit\b",
+    r"\bwithout\s+omitting\b", r"\bomit(?:s|ting)?\s+none\b",
+    r"\bno\s+omissions?\b", r"\bnothing\s+(?:is\s+)?omitted\b",
+    r"\beach\s+(?:entry|file|document|paper|record)\b",
+)]
+
+
+def _strict_covers(ctx: VerifyContext) -> bool:
+    """True when the task or the covers step's Intent states a
+    completeness contract, so covers must require every source item."""
+    text = f"{ctx.task or ''}\n{ctx.intent or ''}"
+    return any(rx.search(text) for rx in _EXHAUSTIVE_CUES)
 
 
 def collect_step_items(sub_steps) -> list[str]:
@@ -217,14 +243,20 @@ def _v_covers(m: re.Match, ctx: VerifyContext) -> CheckResult:
                            f"{rel!r} contains a deferral ({bad!r}) — the "
                            f"document must be finished, not promised")
     covered = [i for i in items if i in content]
-    need = max(1, -(-len(items) // 2))  # at least half, rounded up
+    strict = _strict_covers(ctx)
+    # Issue #17 part 2: an exhaustive task or Intent makes completeness
+    # the contract, so every source item must be mentioned. Otherwise
+    # the floor stays at least half, for summaries and strategy docs.
+    need = len(items) if strict else max(1, -(-len(items) // 2))
     if len(covered) >= need:
         return CheckResult(then, True, "covers",
                            f"{rel!r} mentions {len(covered)} of {len(items)} "
                            f"files from step {step_no}")
     missing = [i for i in items if i not in content]
+    need_text = (f"exhaustive task: needs all {need}" if strict
+                 else f"needs at least {need}")
     detail = (f"{rel!r} mentions {len(covered)} of {len(items)} files from "
-              f"step {step_no} (needs at least {need}); missing include: "
+              f"step {step_no} ({need_text}); missing include: "
               + ", ".join(missing[:12]))
     if len(missing) > 12:
         detail += (f" and {len(missing) - 12} more "

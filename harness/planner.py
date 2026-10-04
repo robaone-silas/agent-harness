@@ -147,6 +147,9 @@ Rules:
   (a summary, strategy, report, or index of those files), write its Then as
   `"out.txt" covers the files from step N` (N = the listing step) — the
   harness checks the document actually mentions the source files.
+- Do not substitute one `contains` Then per source file for `covers` on
+  a document derived from a listing. Per-file clauses cannot prove the
+  document covers the listing; use the single `covers` clause instead.
 - Preserve the task's intent in every step. When the task specifies what a
   deliverable must contain or be like (for example: each entry gives a name
   and a one-line description), give every step that contributes to that

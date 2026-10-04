@@ -25,6 +25,14 @@ Checks:
                      Intent, When, or Then — decomposition may have
                      silently traded the task's intent for mechanics
                      (field: "a one-line description" became "the content").
+  per_item_instead_of_covers (ERROR): a listing step followed by a step
+                     carrying at least two unmatched per-item containment
+                     Then clauses against the same target and no covers
+                     clause for that target (field, issue #5: Priya's
+                     `"audit-index.md" contains an entry for "<file>"`
+                     times six). Completeness expressed that way matches
+                     no verifier and rests entirely on trust; the covers
+                     clause is the machine-checkable form.
 """
 from __future__ import annotations
 
@@ -43,6 +51,19 @@ _CHECKY = re.compile(
     r"""has\s+\d+\s+lines?|covers?\s+the\s+files""",
     re.IGNORECASE,
 )
+# A per-item containment clause: a quoted target, "contains", then some
+# bridge text and a quoted item (`"index.md" contains an entry for
+# "a.txt"`). Group 1 is the target, group 2 the item. On its own this is
+# just an unmatched clause; two or more against one target after a
+# listing step are the issue #5 near miss for a covers clause.
+_PER_ITEM_CONTAINS = re.compile(
+    r"""^\s*(?:the\s+file\s+)?["'`]([^"'`]+)["'`]\s+(?:should\s+)?"""
+    r"""contains?\b.*["'`]([^"'`]+)["'`]""",
+    re.IGNORECASE,
+)
+# A step whose When lists files (the source set a later deliverable is
+# derived from).
+_LISTING = re.compile(r"\blist(?:s|ing|ed)?\b", re.IGNORECASE)
 
 
 @dataclass
@@ -133,20 +154,47 @@ def _intent_drift(task: str, steps: list) -> LintFinding | None:
         f"have been lost in decomposition.")
 
 
+def _per_item_covers_finding(step_id: int, listing_id: int,
+                             per_item: dict, covers_targets: set):
+    """The issue #5 aggregate near miss, as a retryable ERROR.
+
+    Fires when a deliverable step checks one target with at least two
+    unmatched per-item containment clauses and has no covers clause for
+    that target. The detail is the retry feedback, so it names the exact
+    replacement clause the planner should write."""
+    for target, count in per_item.items():
+        if count >= 2 and target not in covers_targets:
+            return LintFinding(
+                step_id, "error", "per_item_instead_of_covers",
+                f"Step {step_id}: {count} Then clauses check "
+                f"\"{target}\" one file at a time, but none of them "
+                f"matches a verifier, so completeness would be taken on "
+                f"trust. Replace those per-item clauses with one clause: "
+                f"\"{target}\" covers the files from step {listing_id}.")
+    return None
+
+
 def lint_plan(task: str, steps: list) -> list[LintFinding]:
     """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when)."""
     findings: list[LintFinding] = []
     known: set[str] = set(_mentions(task))  # files the task itself names
     whens: list[str] = [task or ""]
+    listing_ids: list[int] = []  # earlier steps whose When lists files
     for s in steps:
         known |= _mentions(s.instruction)
         known |= _move_destinations(s.instruction)
         known |= _mentions(s.given)
         whens.append(s.instruction or "")
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
+        per_item: dict[str, int] = {}
+        covers_targets: set[str] = set()
         for t in thens:
             parsed = _verify.parse_then(t)
             if parsed is None:
+                m = _PER_ITEM_CONTAINS.match(t)
+                if m:
+                    target = m.group(1).strip()
+                    per_item[target] = per_item.get(target, 0) + 1
                 if _CHECKY.search(t):
                     findings.append(LintFinding(
                         s.id, "warn", "unparseable_check",
@@ -154,6 +202,8 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
                         f"verifier — it will be taken on trust: {t[:80]}"))
                 continue
             _name, path, value = parsed
+            if _name == "covers" and path:
+                covers_targets.add(path)
             if path and path not in known:
                 findings.append(LintFinding(
                     s.id, "error", "dangling_file",
@@ -167,6 +217,13 @@ def lint_plan(task: str, steps: list) -> list[LintFinding]:
                         f"Step {s.id}: Then asserts exact value '{v[:60]}', "
                         f"which appears nowhere in the task or prior steps — "
                         f"computed or invented?"))
+        if listing_ids:
+            agg = _per_item_covers_finding(s.id, listing_ids[-1],
+                                           per_item, covers_targets)
+            if agg is not None:
+                findings.append(agg)
+        if _LISTING.search(s.instruction or ""):
+            listing_ids.append(s.id)
     drift = _intent_drift(task, steps)
     if drift is not None:
         findings.append(drift)

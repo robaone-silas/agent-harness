@@ -33,6 +33,14 @@ Checks:
                      times six). Completeness expressed that way matches
                      no verifier and rests entirely on trust; the covers
                      clause is the machine-checkable form.
+  covers_on_read_only_step (ERROR): a covers clause sits on a step whose
+                     When only reads or gathers (no write, create, or run
+                     verb producing the covers target) while a later step
+                     writes that same target (field, issue #17 part 3:
+                     Priya's final-replay plan put covers on the read
+                     step and a prose Then on the write step). The check
+                     then runs before the deliverable exists in its
+                     final form; move the clause to the writing step.
   unaccounted_file   (WARN, workspace-aware): under narrow exhaustive
                      cues (a list, inventory, index, or catalogue task,
                      or all/every/each of the files), a workspace root
@@ -122,6 +130,23 @@ _ANSWER_ONLY = re.compile(
 _WRITE_VERB = re.compile(
     r"\b(?:writ\w*|creat\w*|sav\w*|produc\w*|compil\w*|generat\w*|"
     r"draft\w*)\b",
+    re.IGNORECASE,
+)
+# Verbs that produce the target a covers clause checks, for the covers
+# placement rule: the write family above plus run/execute/append forms
+# (a step that runs a script to build its target produces it, even
+# without a literal write verb). "Prepare" and other gather verbs
+# deliberately do not count: preparing entries is not producing the
+# deliverable.
+_PRODUCE_VERB = re.compile(
+    r"\b(?:writ\w*|creat\w*|sav\w*|produc\w*|compil\w*|generat\w*|"
+    r"draft\w*|append\w*|runs?|running|execut\w*)\b",
+    re.IGNORECASE,
+)
+# The source step named by a covers clause ("covers the files from
+# step N"), captured so placement feedback can restate the clause.
+_COVERS_SOURCE = re.compile(
+    r"covers?\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
 
@@ -234,6 +259,41 @@ def _per_item_covers_finding(step_id: int, listing_id: int,
     return None
 
 
+def _covers_placement_finding(step, covers_sources: dict,
+                              later_steps: list):
+    """The issue #17 part 3 placement error, as a retryable ERROR.
+
+    Fires when a step carries a covers clause but its When only reads
+    or gathers (no verb producing the covers target), while a later
+    step writes that same target. The covers check would run before
+    the deliverable exists in its final form, and the writing step is
+    left with whatever prose Then it happens to carry. The detail is
+    the retry feedback, so it names the exact clause to move and the
+    step that should carry it."""
+    if _PRODUCE_VERB.search(step.instruction or ""):
+        return None
+    for target, (src_id, clause) in covers_sources.items():
+        writer = None
+        for later in later_steps:
+            if _PRODUCE_VERB.search(later.instruction or "") \
+                    and target in _mentions(later.instruction or ""):
+                writer = later
+                break
+        if writer is None:
+            continue
+        moved = (f"\"{target}\" covers the files from step {src_id}"
+                 if src_id is not None else clause)
+        return LintFinding(
+            step.id, "error", "covers_on_read_only_step",
+            f"Step {step.id}: the covers clause for \"{target}\" sits "
+            f"on a step whose When only reads or gathers, but step "
+            f"{writer.id} writes \"{target}\", so the completeness "
+            f"check would run before the deliverable exists in its "
+            f"final form. Move the covers clause to step {writer.id}: "
+            f"{moved}.")
+    return None
+
+
 def _workspace_file_set(workspace_files) -> set[str] | None:
     """Normalize the optional workspace root file set for lint_plan.
 
@@ -334,7 +394,7 @@ def lint_plan(task: str, steps: list,
     generic_listing = False  # a step generically lists the workspace
     covers_any = False  # a step's Then uses a covers clause
     output_files: set[str] = set()  # files the plan names as deliverables
-    for s in steps:
+    for idx, s in enumerate(steps):
         known |= _mentions(s.instruction)
         known |= _move_destinations(s.instruction)
         output_files |= _move_destinations(s.instruction)
@@ -354,6 +414,7 @@ def lint_plan(task: str, steps: list,
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
         per_item: dict[str, int] = {}
         covers_targets: set[str] = set()
+        covers_sources: dict[str, tuple] = {}
         for t in thens:
             parsed = _verify.parse_then(t)
             if parsed is None:
@@ -371,6 +432,9 @@ def lint_plan(task: str, steps: list,
             if _name == "covers" and path:
                 covers_targets.add(path)
                 covers_any = True
+                src = _COVERS_SOURCE.search(t)
+                covers_sources[path] = (
+                    int(src.group(1)) if src else None, t)
             if path:
                 # A file a Then checks is a named deliverable target,
                 # whatever the verifier: exists, contains, covers.
@@ -393,6 +457,11 @@ def lint_plan(task: str, steps: list,
                                            per_item, covers_targets)
             if agg is not None:
                 findings.append(agg)
+        if covers_sources:
+            placement = _covers_placement_finding(
+                s, covers_sources, steps[idx + 1:])
+            if placement is not None:
+                findings.append(placement)
         if _LISTING.search(s.instruction or ""):
             listing_ids.append(s.id)
     drift = _intent_drift(task, steps)

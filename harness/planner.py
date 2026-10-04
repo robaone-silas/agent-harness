@@ -120,7 +120,15 @@ def build_planner_prompt(task: str, tool_names: list[str],
                    "the harness just ran):\n" + discovery
                    + "\nBase the plan's categories, values, and groupings on "
                      "these findings, not on assumptions about what such a "
-                     "workspace usually contains.\n")
+                     "workspace usually contains.\n"
+                   + "\nReconcile the findings against the workspace contents "
+                     "listed above before planning: a workspace file that "
+                     "is absent from the findings is unexamined, not "
+                     "automatically out of scope. If an unexamined file "
+                     "could belong to this task, account for it in the plan "
+                     "(list it, read it, or name it) or explicitly exclude "
+                     "it; do not describe a set drawn only from the findings "
+                     "as complete, or as all of the files.\n")
     return f"""You are a planner. Break the task below into a short sequence of small steps.
 Write the plan in Gherkin — one Scenario per step, in order.
 
@@ -303,8 +311,51 @@ def propose(task: str, cfg: Config, chat_fn=None
 READ_ONLY_TOOLS = ("list_dir", "read_file", "grep_files")
 
 
+def _is_exhaustive_task(task: str) -> bool:
+    """True when the task asks for an account of the whole workspace:
+    a list, inventory, index, or catalogue, or all / every / each of the
+    files (or documents, papers, records). Those tasks make every
+    root-level file potentially in scope, so discovery for them must be
+    exhaustive rather than a sample (issue #6). Category, strategy, and
+    value tasks carry none of these cues and keep sampling."""
+    import re
+    low = (task or "").lower()
+    if re.search(r"\b(list|listing|inventory|index|catalogue|catalog)\b",
+                 low):
+        return True
+    return bool(re.search(
+        r"\b(all|every|each)\b[^.\n]{0,40}"
+        r"\b(files?|documents?|papers?|records?)\b", low))
+
+
+def _discovery_steering(task: str) -> str:
+    """The task-sensitive sampling rule for the discovery prompt.
+
+    Exhaustive tasks (see _is_exhaustive_task) get a listing step and a
+    full accounting of the workspace root; the sampling rule that is
+    right for category, strategy, and value discovery is expressly
+    withdrawn for them, because a sample silently drops files the task
+    asked about (issue #6, Tomas's omitted water-heater manual)."""
+    if _is_exhaustive_task(task):
+        return ("- This task is exhaustive: it asks for a list, an "
+                "inventory, or an index, or for all or every file. "
+                "Sampling is not acceptable for this task.\n"
+                "- Start with a listing step that lists the files at "
+                "the workspace root.\n"
+                "- Account for every file at the workspace root: each "
+                "one must be read, searched, named in the plan, or "
+                "explicitly excluded with a reason. No root file may "
+                "be left unaccounted for.")
+    return ("- Sampling is acceptable for this task: it asks what "
+            "categories, a strategy, or values should be, not for an "
+            "account of every file. Read the files most likely to "
+            "decide the plan's categories or values; do not read "
+            "everything.")
+
+
 def build_discovery_prompt(task: str, workspace: str | None = None) -> str:
     digest = workspace_digest(workspace)
+    steering = _discovery_steering(task)
     return f"""You are planning a read-only discovery pass. The task below
 cannot be planned well yet: the planner first needs facts about the
 workspace. Write a short Gherkin plan, 1 to 4 steps, whose steps only
@@ -321,8 +372,7 @@ Rules:
 - Only list, read, and search. No writes, no moves, no commands.
 - Each step learns something the real plan needs: what files exist,
   what the important ones contain, how things are structured.
-- Read the files most likely to decide the plan's categories or values;
-  do not read everything.
+{steering}
 - Return ONLY the Gherkin, no other text.
 {digest}Task: {task}"""
 

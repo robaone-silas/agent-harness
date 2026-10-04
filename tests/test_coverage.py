@@ -288,7 +288,11 @@ def t_empty_done_gets_computed_outline_line():
             return {"role": "assistant", "content": "DONE: fine."}
 
         r = planner.run_planned("summarize", cfg, chat_fn=fake)
-        check("run done", r.status == "done", r.status)
+        # This fixture's step 2 never writes the covers target, so
+        # under issue #22 the run ends in the deliverable audit, not
+        # done. The test's subject is the step prompts above.
+        check("run ends in the deliverable audit (nothing was written)",
+              r.status == "step_failed", r.status)
         p2 = prompts[2]
         check("outline notes the missing summary",
               "no summary given" in p2, p2[:900])

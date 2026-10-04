@@ -43,6 +43,22 @@ def _truncate(text: str, limit: int) -> str:
 
 def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
                max_output_chars: int) -> dict:
+    def _resolve_for_write(path: str) -> Path:
+        # Issue #22: the .harness directory is the harness's own
+        # bookkeeping (run records, step outputs), not a place work
+        # can be delivered to. A step that saves its output there has
+        # delivered nothing, so refuse at the moment of the write and
+        # name the way out. Reads of the store stay open: later steps
+        # legitimately read earlier steps' records.
+        p = jail.resolve(path)
+        store = jail.root / ".harness"
+        if p == store or store in p.parents:
+            raise Refusal(
+                f"{path!r} is inside the harness's own .harness store "
+                f"(run records, not deliverables) — write to the file "
+                f"your step names instead")
+        return p
+
     def t_exec(command: str) -> str:
         for b in blocked:
             if b in command:
@@ -66,7 +82,7 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         return _truncate("\n".join(chunk), max_output_chars) or "(empty file)"
 
     def t_write_file(path: str, content: str) -> str:
-        p = jail.resolve(path)
+        p = _resolve_for_write(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         return f"wrote {len(content)} bytes to {path}"
@@ -80,7 +96,7 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         # when the content lacks it, because the live proof showed the
         # model does not reliably end its entries with one and separate
         # steps' entries ran together on a single line.
-        p = jail.resolve(path)
+        p = _resolve_for_write(path)
         p.parent.mkdir(parents=True, exist_ok=True)
         created = not p.is_file()
         if content and not content.endswith("\n"):
@@ -91,7 +107,7 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         return f"appended {len(content)} bytes to {path}{note}"
 
     def t_edit_file(path: str, old_text: str, new_text: str) -> str:
-        p = jail.resolve(path)
+        p = _resolve_for_write(path)
         if not p.is_file():
             raise ToolError(f"no such file: {path!r}")
         text = p.read_text(errors="replace")

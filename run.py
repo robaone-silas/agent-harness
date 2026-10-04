@@ -109,6 +109,9 @@ def show_event(kind, *args, quiet=False):
                 print(f"    ! {c.detail}")
     elif kind == "step_failed":
         print(f"  step {args[0].id} FAILED.")
+    elif kind == "deliverables_missing":
+        print(f"  ! promised deliverable(s) never created: "
+              f"{', '.join(args[0])} — the run cannot report done.")
 
 
 def main() -> int:

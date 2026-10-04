@@ -1109,7 +1109,9 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
     """Execute an approved plan, one scoped step at a time. on_event(kind, *args)
     reports ("step_start", step), ("step_sub", step, sub), ("step_verify", step,
     StepVerify), ("step_verify_waived", step, StepVerify), ("step_done", step),
-    ("step_failed", step). A waived verification still counts the step done."""
+    ("step_failed", step). A waived verification still counts the step done.
+    Issue #22 adds ("deliverables_missing", [paths]): after all steps, the
+    promised-deliverable audit can still fail the run (see below)."""
     chat_fn, jail, _registry = _chat_and_tools(cfg, chat_fn)
 
     def emit(kind, *args):
@@ -1133,6 +1135,30 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
             break
 
     status = "done" if steps and all(s.status == "done" for s in steps) else "step_failed"
+
+    # Issue #22: the deliverable audit. Steps can finish with their
+    # verification waived, and a waived step still counts done, so the
+    # per-step machinery alone cannot promise the user a deliverable.
+    # Before the run may report done, every file the plan's Thens
+    # promised must exist. This judges existence only, neither plan
+    # adherence nor content quality, so it does not reopen the
+    # warn-downgrade decision: a warning can excuse a wrong check,
+    # never a missing delivery.
+    missing: list[str] = []
+    if status == "done":
+        from . import verify as _verify
+        missing = _verify.missing_deliverables(steps, jail)
+        if missing:
+            status = "step_failed"
+            emit("deliverables_missing", missing)
+    if missing:
+        answer = ("The plan's steps finished, but this run is a "
+                  "failure: promised deliverable(s) were never "
+                  "created: " + ", ".join(missing) + ". A run only "
+                  "reports done when every file the plan promises "
+                  "exists.")
+        return PlannedRun(status, answer, steps,
+                          run_id=store.run_id if store is not None else "")
 
     summary = (f"Overall goal: {task}\nPlan execution ended: {status}.\n"
                + "\n".join(f"Step {s.id} [{s.status}]: {s.instruction}"

@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from . import gherkin
+from . import graphcheck as _graphcheck
+from . import indexing as _indexing
 from . import loop
 from .config import Config
 
@@ -82,7 +84,7 @@ Feature: Recipe index
     Then the output lists the recipe files
   Scenario: Step 2 - Write the index
     When I write recipe-index.md indexing the listed recipes
-    Then "recipe-index.md" covers the files from step 1
+    Then "recipe-index.md" indexes the files from step 1
 
 Task: Move the 2025 meeting notes into an archive folder
 Feature: Archive meeting notes
@@ -142,7 +144,7 @@ Feature: Seed packet inventory
   Scenario: Step 2 - Write the inventory
     Intent: each entry names the plant and what it is for, in a file the user can keep
     When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
-    Then "seed-inventory.txt" covers the files from step 1
+    Then "seed-inventory.txt" indexes the files from step 1
 
 In the catalog example, note the shape: the per-item steps only gather,
 and the final step carries the covers check against the listing step.
@@ -193,12 +195,21 @@ Rules:
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
 - When a step writes a document derived from an earlier step's file listing
-  (a summary, strategy, report, or index of those files), write its Then as
+  (a summary, strategy, or report about those files), write its Then as
   `"out.txt" covers the files from step N` (N = the listing step) — the
   harness checks the document actually mentions the source files.
 - Do not substitute one `contains` Then per source file for `covers` on
   a document derived from a listing. Per-file clauses cannot prove the
   document covers the listing; use the single `covers` clause instead.
+- When a step's whole job is to read every file from an earlier listing
+  step and compile an index, inventory, or catalog with a short
+  description of each file, write its Then as
+  `"out.txt" indexes the files from step N` instead of `covers`. For an
+  `indexes` step the harness builds that file itself: it reads each
+  listed file, gets a one-line description of each, and writes the
+  target with one entry per file, so no file can be omitted. Use
+  `covers` when the step itself writes a document derived from a
+  listing in some other way.
 - Each step runs under a turn budget that scales with the operations it
   implies: by default a base of 6 turns, plus one turn per file it must
   read beyond that, up to a maximum of 24. If a step would need more
@@ -685,6 +696,63 @@ def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _index_describe(chat_fn, name: str, content: str) -> str:
+    """One per-file description call for the indexing primitive.
+
+    Returns the model's raw reply, or "" on any failure (the indexing
+    build treats an empty description as a decline, and the step
+    falls back to its normal executor sub-run)."""
+    try:
+        msg = chat_fn([{"role": "user",
+                        "content": _indexing.describe_prompt(name,
+                                                             content)}],
+                      None)
+    except Exception:
+        return ""
+    return (msg.get("content") or "") if isinstance(msg, dict) else ""
+
+
+def _graph_contract_block(task: str, step: PlanStep,
+                          steps: list[PlanStep]) -> str:
+    """The step's node contract from the plan graph, for its prompt.
+
+    Experimental (Config.graph_contracts): the executor is told, in
+    field terms, what inputs it may rely on and who produced them, and
+    what outputs it must produce, instead of inferring the data flow
+    from prose. The graph is computed from the plan text alone (no
+    workspace scan), so the contract is the same graph the approval
+    display derives from the plan, and it does not drift as steps
+    create files. Returns "" when the step has no fields."""
+    graph = _graphcheck.build_graph(task, steps)
+    node = next((n for n in graph.nodes if n.step_id == step.id), None)
+    if node is None or (not node.inputs and not node.outputs):
+        return ""
+    producers = {e.field: e.producer for e in graph.edges
+                 if e.consumer == step.id}
+
+    def describe(label: str) -> str:
+        if label in producers:
+            return f'"{label}" (produced by step {producers[label]})'
+        if label.startswith("files from step ") \
+                or (label.startswith("step ") and label.endswith(" output")):
+            return f'"{label}"'
+        return f'"{label}" (from the task or the workspace)'
+
+    lines = ["Your place in the plan graph (computed from the plan, "
+             "deterministic):"]
+    if node.inputs:
+        lines.append("  Inputs available to you: "
+                     + "; ".join(describe(i) for i in node.inputs) + ".")
+    if node.outputs:
+        lines.append("  Outputs this step must produce: "
+                     + "; ".join(f'"{o}"' for o in node.outputs) + ".")
+        lines.append("  This step is complete only when every output "
+                     "above exists with its content in place, under "
+                     "exactly that name. Later steps consume these "
+                     "outputs as named.")
+    return "\n".join(lines) + "\n"
+
+
 def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     """Build the DONE gate for one step (v0.8.1), or None when the step has
     no completed prior steps with stored outputs.
@@ -867,10 +935,15 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "covers", "has_lines")
+                                  "covers", "indexes", "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)
+    # Experimental: the step's plan-graph node contract rides in its
+    # prompt when enabled. Computed once here; the graph derives from
+    # plan text, so the verification retry sees the same contract.
+    contract = (_graph_contract_block(task, step, steps)
+                if getattr(cfg, "graph_contracts", False) else "")
     # Issue #14: this step's turn budget is computed from its planned
     # operations now that prior steps' source items are known, and the
     # same budget governs the verification retry.
@@ -910,6 +983,52 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         except Exception:
             pass  # the store is a record, never a reason to fail real work
 
+    # Indexing primitive: when the step carries an `indexes` clause,
+    # the harness tries to build the target itself (enumerate the
+    # source step's items, one description call per file, write the
+    # index) before any executor sub-run. Success skips the sub-run
+    # entirely; a declined build (unreadable file, empty description)
+    # or a failed verification of the step's other Thens falls
+    # through to the normal loop below, with any verification failure
+    # as its feedback. Placed here, after persist() exists.
+    clause = _indexing.clause_for(step)
+    if clause is not None:
+        target, source_id = clause
+        src_step = next((s for s in steps if s.id == source_id), None)
+        items = list(src_step.source_items) if src_step is not None else []
+        records = None
+        if items:
+            records = _indexing.build_index(
+                jail.root, items,
+                lambda name, content: _index_describe(chat_fn, name,
+                                                      content))
+        if records is not None:
+            dest = jail.resolve(target)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(_indexing.render_index(records))
+            step.result = (f"DONE: indexed {len(records)} files into "
+                           f"{target} with the harness indexing "
+                           f"primitive.")
+            step.source_items = list(items)
+            import json as _json
+            for name in items:
+                step.touched_args.add(_json.dumps({"path": name}))
+            step.touched_args.add(_json.dumps({"path": target}))
+            vres = _verify.verify_step(thens, vctx)
+            step.verify = [{"then": c.then, "verifier": c.verifier,
+                            "ok": c.ok, "detail": c.detail}
+                           for c in vres.checks]
+            attempts.append({"sub_steps": [], "answer": step.result,
+                             "verify_checks": list(step.verify)})
+            emit("step_verify", step, vres)
+            if vres.ok:
+                step.status = "done"
+                persist("done")
+                emit("step_done", step)
+                return True
+            feedback = "; ".join(c.detail for c in vres.checks
+                                  if not c.ok)
+
     for _ in range(1 + cfg.verify_retries):
         prompt = (f"Overall goal: {task}\n"
                   f"You are executing step {step.id} of {n_steps}. "
@@ -922,6 +1041,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             prompt += f"Intent of this step: {step.intent}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
+        if contract:
+            prompt += contract
         if store is not None and step.output_path:
             # Wording matters (field, 2026-10-03): "Your full output will be
             # stored at..." read as a write instruction and a step wrote its

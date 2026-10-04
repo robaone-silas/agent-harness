@@ -41,6 +41,20 @@ Checks:
                      step and a prose Then on the write step). The check
                      then runs before the deliverable exists in its
                      final form; move the clause to the writing step.
+  covers_instead_of_indexes (ERROR): a covers clause sits on an
+                     entry-per-file compilation drawn directly on the
+                     listing step (describe-each or list-type task
+                     language; the When references only the source
+                     step and produces the target). That is the shape
+                     the harness indexing primitive exists for, so the
+                     retry feedback replaces covers with `indexes`:
+                     the harness then builds the target itself, one
+                     entry per file. Never fires when the task forbids
+                     reading file contents (a strategy from filenames
+                     only cannot be indexed without violating the
+                     task), nor on a final step assembling earlier
+                     gather steps' work (the catalog shape), whose
+                     covers clause is the right form.
   unaccounted_file   (WARN, workspace-aware): under narrow exhaustive
                      cues (a list, inventory, index, or catalogue task,
                      or all/every/each of the files), a workspace root
@@ -149,6 +163,29 @@ _COVERS_SOURCE = re.compile(
     r"covers?\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
+# A task that forbids reading file contents. Indexing reads every
+# file by definition, so such a task must never be pushed toward the
+# indexes clause (Daniel Okafor's shape: a strategy from filenames).
+_NO_READ_TASK = re.compile(
+    r"do not read|don't read|without reading|based only on the "
+    r"(?:file ?)?names|filenames only|file names only|names only",
+    re.IGNORECASE,
+)
+# Entry-per-file language: the deliverable describes each source in
+# turn, which is the indexing primitive's shape.
+_ENTRY_LANGUAGE = re.compile(
+    r"descri\w*|one[- ]line|what each|each (?:file|entry|item|one)\b|"
+    r"per file",
+    re.IGNORECASE,
+)
+# List-type task language (index, inventory, catalog, list): the
+# deliverable is an enumeration of the sources.
+_LIST_TYPE_TASK = re.compile(
+    r"\b(?:index|indexes|inventory|inventories|catalog|catalogue|"
+    r"list|listing)\b",
+    re.IGNORECASE,
+)
+_STEP_REF = re.compile(r"\bstep\s+(\d+)\b", re.IGNORECASE)
 
 
 @dataclass
@@ -294,6 +331,46 @@ def _covers_placement_finding(step, covers_sources: dict,
     return None
 
 
+def _indexes_push_finding(step, covers_sources: dict, task: str):
+    """The push toward the indexing primitive, as a retryable ERROR.
+
+    Fires when a step compiles its covers target entry by entry
+    directly from the listing step: entry-per-file or list-type
+    language in the task, the step's Intent, or its When; the When
+    references only the covers source step (a step drawing on
+    intermediate gather steps is an assembly, and covers is its
+    right form); and the When produces the target. The detail is
+    the retry feedback, so it names the exact replacement clause.
+    A task that forbids reading contents never fires: indexing
+    reads every file by definition."""
+    if _NO_READ_TASK.search(task or ""):
+        return None
+    language = " ".join([task or "", getattr(step, "intent", "") or "",
+                         step.instruction or ""])
+    if not (_ENTRY_LANGUAGE.search(language)
+            or _LIST_TYPE_TASK.search(task or "")):
+        return None
+    if not _PRODUCE_VERB.search(step.instruction or ""):
+        return None
+    refs = {int(m.group(1))
+            for m in _STEP_REF.finditer(step.instruction or "")}
+    for target, (src_id, _clause) in covers_sources.items():
+        if src_id is None or refs != {src_id}:
+            continue
+        return LintFinding(
+            step.id, "error", "covers_instead_of_indexes",
+            f"Step {step.id}: this step compiles \"{target}\" entry "
+            f"by entry from the files listed in step {src_id}, the "
+            f"list-and-compile shape the harness has a primitive "
+            f"for. Replace the covers clause with \"{target}\" "
+            f"indexes the files from step {src_id}: the harness "
+            f"then builds \"{target}\" itself, reading each listed "
+            f"file and writing one entry per file, so no source "
+            f"can be omitted and the step cannot spend its turns "
+            f"reading.")
+    return None
+
+
 def _workspace_file_set(workspace_files) -> set[str] | None:
     """Normalize the optional workspace root file set for lint_plan.
 
@@ -435,6 +512,16 @@ def lint_plan(task: str, steps: list,
                 src = _COVERS_SOURCE.search(t)
                 covers_sources[path] = (
                     int(src.group(1)) if src else None, t)
+            if _name == "indexes" and path:
+                # The indexes clause is the other machine-checked
+                # completeness form (the harness builds the target
+                # itself, one entry per source file): it satisfies
+                # the per-item rule and accounts for the listing,
+                # exactly as covers does. The covers placement rule
+                # does not apply; there is no model-written step for
+                # the clause to sit on the wrong side of.
+                covers_targets.add(path)
+                covers_any = True
             if path:
                 # A file a Then checks is a named deliverable target,
                 # whatever the verifier: exists, contains, covers.
@@ -462,6 +549,9 @@ def lint_plan(task: str, steps: list,
                 s, covers_sources, steps[idx + 1:])
             if placement is not None:
                 findings.append(placement)
+            push = _indexes_push_finding(s, covers_sources, task)
+            if push is not None:
+                findings.append(push)
         if _LISTING.search(s.instruction or ""):
             listing_ids.append(s.id)
     drift = _intent_drift(task, steps)

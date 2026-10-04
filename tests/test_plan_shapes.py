@@ -106,8 +106,9 @@ def t_inventory_shape_names_a_durable_deliverable():
             break
     check("an inventory exemplar exists", found is not None)
     last = found[-1]
-    check("inventory deliverable carries covers",
-          "covers the files from step 1" in last.done_when, last.done_when)
+    check("inventory deliverable carries indexes",
+          "indexes the files from step 1" in last.done_when,
+          last.done_when)
     check("inventory deliverable step carries an intent",
           bool(last.intent), last.instruction)
 

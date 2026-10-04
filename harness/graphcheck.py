@@ -57,6 +57,13 @@ from . import verify as _verify
 from .planlint import LintFinding
 
 _STEP_REF = re.compile(r"\bstep\s+(\d+)\b", re.IGNORECASE)
+# The source step named by an indexes clause (graphcheck's listing
+# edge treats indexes exactly like covers: both consume the listing
+# field a listing step produces).
+_INDEXES_SOURCE = re.compile(
+    r"indexes\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
+    re.IGNORECASE,
+)
 # A step produces a file list when its When lists or gathers files.
 # Wider than planlint's placement heuristic: gathering or scanning
 # the files produces the same field a covers clause consumes.
@@ -204,8 +211,9 @@ def _analyze(task: str, steps: list, workspace_files=None):
 
         for t in thens:
             parsed = _verify.parse_then(t)
-            if parsed and parsed[0] == "covers":
-                src = _planlint._COVERS_SOURCE.search(t)
+            if parsed and parsed[0] in ("covers", "indexes"):
+                src = _planlint._COVERS_SOURCE.search(t) \
+                    or _INDEXES_SOURCE.search(t)
                 if src:
                     n = int(src.group(1))
                     add("listing", str(n), f"files from step {n}")
@@ -286,8 +294,8 @@ def _analyze(task: str, steps: list, workspace_files=None):
                 if kind == "listing" and n not in listing_steps:
                     add_finding(
                         s.id, "error", "covers_source_not_a_listing",
-                        f"Step {s.id}: the covers clause draws its "
-                        f"file list from step {n}, but step {n} "
+                        f"Step {s.id}: a completeness clause draws "
+                        f"its file list from step {n}, but step {n} "
                         f"produces no file list (its When does not "
                         f"list or gather files), so the completeness "
                         f"check has no source set to check against.")

@@ -264,6 +264,53 @@ def _v_covers(m: re.Match, ctx: VerifyContext) -> CheckResult:
     return CheckResult(then, False, "covers", detail)
 
 
+@verifier("indexes",
+          rf"""^{_FILE}{_QPATH}\s+indexes\s+the\s+files\s+"""
+          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
+def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
+    """The productive counterpart of covers: the step declares that
+    its target is an index of step N's files, built by the harness
+    indexing primitive (or, on the fallback path, by the executor).
+    Strict by definition: an index that omits a source file is not an
+    index of it, so every recorded item must appear, with no
+    at-least-half floor and no exhaustive-cue condition."""
+    rel = _pick(*m.groups()[0:4])
+    step_no = int(m.group(5))
+    then = m.string.strip()
+    p, err = _resolve(ctx, rel)
+    if err:
+        return CheckResult(then, False, "indexes", err)
+    items = list(ctx.prior_items.get(step_no) or [])
+    if not items:
+        return CheckResult(then, True, "indexes",
+                           f"step {step_no} produced no file list — "
+                           f"coverage not checked")
+    if not p.is_file():
+        return CheckResult(then, False, "indexes",
+                           f"{rel!r} is not a file — expected it to "
+                           f"index the {len(items)} files from step "
+                           f"{step_no}")
+    content = p.read_text(errors="replace")
+    bad = _deferral_in(content)
+    if bad:
+        return CheckResult(then, False, "indexes",
+                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"the index must be finished, not promised")
+    covered = [i for i in items if i in content]
+    if len(covered) == len(items):
+        return CheckResult(then, True, "indexes",
+                           f"{rel!r} indexes all {len(items)} files "
+                           f"from step {step_no}")
+    missing = [i for i in items if i not in content]
+    detail = (f"{rel!r} indexes {len(covered)} of {len(items)} files "
+              f"from step {step_no}; an index must name every file; "
+              f"missing include: " + ", ".join(missing[:12]))
+    if len(missing) > 12:
+        detail += (f" and {len(missing) - 12} more "
+                   f"(see step {step_no}'s stored output)")
+    return CheckResult(then, False, "indexes", detail)
+
+
 @verifier("contains",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?!exactly\b|the\s+exact\s+content\b){_QTEXT}\s*$""")

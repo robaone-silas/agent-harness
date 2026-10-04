@@ -1,0 +1,39 @@
+name: Unit tests
+
+on:
+  push:
+    branches:
+      - develop
+      - "feature/**"
+      - "release/**"
+  pull_request:
+    branches:
+      - develop
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Run unit tests
+        run: |
+          failures=0
+          for f in tests/test_*.py; do
+            echo "== $f"
+            python "$f" || failures=1
+          done
+          if [ "$failures" -ne 0 ]; then
+            echo "One or more test files failed."
+          fi
+          exit $failures

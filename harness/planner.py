@@ -842,7 +842,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     from . import verify as _verify
     vctx = _verify.VerifyContext(
         jail=jail, step_id=step.id, task=task,
-        prior_items={s.id: list(s.source_items) for s in steps if s.source_items})
+        prior_items={s.id: list(s.source_items) for s in steps if s.source_items},
+        intent=step.intent or "")
     feedback = ""
     last_vres = None
     attempts: list[dict] = []

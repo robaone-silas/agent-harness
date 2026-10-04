@@ -256,7 +256,9 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
             last_problem = err
         else:
             steps = to_plan_steps(plan)
-            findings = _planlint.lint_plan(task, steps)
+            findings = _planlint.lint_plan(
+                task, steps,
+                workspace_files=_root_workspace_files(cfg.workspace))
             by_step: dict[int, list] = {}
             for f in findings:
                 by_step.setdefault(f.step_id, []).append(f.as_dict())

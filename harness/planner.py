@@ -254,6 +254,8 @@ class PlanStep:
     source_items: list = field(default_factory=list)  # names this step produced (v0.8.1 covers)
     tool_summary: str = ""  # harness-computed "tools used; output size" line
     budget: int = 0  # effective turn budget for this step (issue #14)
+    touched_args: set = field(default_factory=set)  # dumped tool-call args
+    # from this step's completed attempts (issue #17 read coverage)
 
 
 def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
@@ -702,7 +704,20 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     (contains, covers, and kin; a bare exists proves nothing, the
     founding stub passed it), the suspicion is answered and the gate
     stays silent. An attested or failing Then keeps the pushback
-    exactly as before."""
+    exactly as before.
+
+    Coverage stage (issue #17): when the step carries a covers clause,
+    the listing step's source items are compared against the files read
+    so far in the run: completed prior steps' recorded tool calls plus
+    this sub-run's. Step scope is soft, so an earlier gather step's
+    reads count; what matters is that the run has actually opened every
+    file the deliverable claims to cover. An unread source file draws a
+    pushback naming it. This stage ignores verify_now on purpose: a
+    deliverable can mention a file it never read, and mentions are not
+    evidence. It shares the gate's existing budget of two pushbacks per
+    sub-run (the loop cap is unchanged) and is evaluated before stage 2,
+    because "read these files" is the more specific instruction when
+    both apply."""
     priors = [s.output_path for s in steps
               if s.id < step.id and s.status == "done" and s.output_path]
     if not priors:
@@ -729,6 +744,53 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
                     f"file ({step.output_path}) is not one of these sources: the "
                     f"harness writes it after you finish, it does not exist yet, "
                     f"so do not try to read it.")
+        # Coverage stage (issue #17): a covers clause claims the
+        # deliverable accounts for a listing step's files. Compare those
+        # items against everything read so far in the run: prior steps'
+        # recorded calls (touched_args) plus this sub-run's calls.
+        import re as _re
+        from . import verify as _verify
+        by_id = {s.id: s for s in steps}
+        items: list[str] = []
+        targets: list[str] = []
+        for then in (step.done_when or "").split("\n"):
+            then = then.strip()
+            if not then or _verify.match_verifier(then) != "covers":
+                continue
+            m = _re.search(r"step\s+(\d+)", then)
+            if not m:
+                continue
+            src = by_id.get(int(m.group(1)))
+            if src is None:
+                continue
+            parsed = _verify.parse_then(then)
+            if parsed and parsed[1]:
+                targets.append(parsed[1])
+            for item in src.source_items or []:
+                if item not in items:
+                    items.append(item)
+        if items:
+            blobs = set()
+            for s in steps:
+                if s.id < step.id:
+                    blobs.update(s.touched_args or set())
+            for s in sub_steps:
+                if s.tool and s.args:
+                    blobs.add(_json.dumps(s.args, default=str))
+            missing = [i for i in items
+                       if not any(i in b for b in blobs)]
+            if missing:
+                claim = (f'"{targets[0]}" covers' if targets
+                         else "This step covers")
+                return (f"HARNESS: {claim} the files from an earlier "
+                        f"listing step, but these files have not been read "
+                        f"yet in this run: {', '.join(missing)}. Work about "
+                        f"a file must come from its actual contents, not "
+                        f"from its name in a list. Read each named file now "
+                        f"with read_file, then redo this step from what "
+                        f"they contain. If a named file genuinely is not a "
+                        f"source for this step, answer DONE: again and say "
+                        f"why in one sentence.")
         if any(s.tool and not names_prior(s) for s in sub_steps[read_idx + 1:]):
             return None  # real work happened after the read: grounded
         # Before demanding the redo, look at the deliverable (surgical
@@ -816,6 +878,15 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
 
     def persist(status: str):
         if attempts:
+            # Record what this step's attempts touched, for the read
+            # coverage gate stage (issue #17): later steps compare a
+            # covers clause's source items against the run's reads.
+            import json as _json
+            for att in attempts:
+                for s in att.get("sub_steps") or []:
+                    if s.tool and s.args:
+                        step.touched_args.add(
+                            _json.dumps(s.args, default=str))
             counts: dict[str, int] = {}
             n_lines = 0
             for s in attempts[-1].get("sub_steps") or []:

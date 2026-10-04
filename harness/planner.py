@@ -205,7 +205,12 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
         steps.append(PlanStep(
             id=i,
             instruction="\n".join(p.when)[:500],
-            done_when="\n".join(p.then)[:300],
+            # done_when is the step's verification contract: badges, lint,
+            # executor prompts, and verification all consume it. It is NOT
+            # length-capped. A 300-char cap silently truncated combined
+            # Then clauses mid-clause (issue #7: a six-clause step lost its
+            # tail), so every clause is preserved exactly.
+            done_when="\n".join(p.then),
             given="\n".join(p.given)[:300],
             title=(p.title or "")[:120],
             intent=(p.intent or "")[:300],

@@ -15,7 +15,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from harness import config, gherkin, loop, verify as _verify
+from harness import config, gherkin, graphcheck as _graphcheck, loop
+from harness import verify as _verify
 from harness import planner as _planner
 
 
@@ -40,6 +41,27 @@ def _show_lint(steps):
         print(f"  step {sid} [{tag} {f['code']}]: {f['detail']}")
 
 
+def _show_graph(task, steps, workspace):
+    """Print the plan's data-flow graph at approval time (prototype).
+
+    Display-only supplement to the lint findings: the graph shows what
+    each step consumes and produces, and the graph checker's findings
+    flag edges that point nowhere, point backward, or draw on a field
+    the producer never makes. Nothing here blocks approval."""
+    graph = _graphcheck.build_graph(task, steps, workspace_files=workspace)
+    findings = _graphcheck.check_plan(task, steps, workspace_files=workspace)
+    print("Plan graph (prototype, deterministic):")
+    for n in graph.nodes:
+        ins = ", ".join(n.inputs) if n.inputs else "nothing"
+        outs = ", ".join(n.outputs) if n.outputs else "nothing"
+        print(f"  step {n.step_id}: in [{ins}] -> out [{outs}]")
+    if not findings:
+        print("  graph check: clean, every input has a producer.")
+    for f in findings:
+        tag = "ERROR" if f.level == "error" else "warn"
+        print(f"  step {f.step_id} [{tag} {f.code}]: {f.detail}")
+
+
 def show_event(kind, *args, quiet=False):
     if quiet:
         return
@@ -47,7 +69,8 @@ def show_event(kind, *args, quiet=False):
         steps = args[0]
         print(f"plan ({len(steps)} steps):")
         for s in steps:
-            print(f"  {s.id}. {s.instruction} [done when: {s.done_when}]")
+            budget = f" [budget: {s.budget} turns]" if getattr(s, "budget", 0) else ""
+            print(f"  {s.id}. {s.instruction} [done when: {s.done_when}]{budget}")
     elif kind == "step_start":
         print(f"\n=== step {args[0].id}: {args[0].instruction} ===")
     elif kind == "step_sub":
@@ -138,6 +161,7 @@ def propose_plan(cfg, task, planned=None) -> int:
         badge = f"[checks itself: {v}]" if v else "[on trust]"
         print(f"  step {s.id}: Then {t} {badge}")
     _show_lint(result)
+    _show_graph(task, result, cfg.workspace)
     print()
     print(canonical)
     return 0

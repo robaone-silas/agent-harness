@@ -14,8 +14,12 @@ class Config:
     max_steps: int = 12
     temperature: float = 0.2
     top_p: float = 0.9
-    step_max_steps: int = 6  # per-step cap in plan mode
+    step_max_steps: int = 6  # per-step base cap in plan mode (issue #14:
+    # the effective budget scales with a step's counted planned operations)
+    step_budget_ceiling: int = 24  # hard cap for the dynamic step budget
     verify_retries: int = 1  # per-step Then-verification retries (v0.7)
+    graph_contracts: bool = False  # step prompts carry their plan-graph
+    # node contract (inputs with producers, required outputs); experiment
     request_timeout: int = 180
     exec_timeout: int = 30
     max_output_chars: int = 2000
@@ -40,7 +44,11 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
     p.add_argument("--workspace", default=os.environ.get("HARNESS_WORKSPACE", "./sandbox"))
     p.add_argument("--max-steps", type=int, default=12)
     p.add_argument("--step-max-steps", type=int, default=6,
-                   help="Max steps per plan step in --plan mode.")
+                   help="Base steps per plan step in --plan mode; the "
+                        "effective budget scales with the step's planned "
+                        "operations up to --step-budget-ceiling.")
+    p.add_argument("--step-budget-ceiling", type=int, default=24,
+                   help="Hard cap for a plan step's dynamic turn budget.")
     p.add_argument("--plan", action="store_true",
                    help="Propose a Gherkin plan, write it to plan.feature, and stop "
                         "for human review/editing. Does not execute.")
@@ -52,6 +60,10 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
                    help="Execute an approved .feature plan file.")
     p.add_argument("--auto", action="store_true",
                    help="Plan and execute in one go (no approval step).")
+    p.add_argument("--graph-contracts", action="store_true",
+                   help="Execution prompts carry each step's plan-graph "
+                        "node contract (inputs with producers, required "
+                        "outputs). Experimental; default off.")
     p.add_argument("--temperature", type=float, default=0.2)
     p.add_argument("--trace", default=None, help="Write step trace JSONL here.")
     p.add_argument("--quiet", action="store_true", help="Only print the final answer.")
@@ -76,8 +88,10 @@ def from_args(argv: list[str] | None = None) -> tuple[Config, str]:
         workspace=args.workspace,
         max_steps=args.max_steps,
         step_max_steps=args.step_max_steps,
+        step_budget_ceiling=args.step_budget_ceiling,
         temperature=args.temperature,
         trace_path=args.trace,
         quiet=args.quiet,
+        graph_contracts=args.graph_contracts,
     )
     return cfg, args

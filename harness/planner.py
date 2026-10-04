@@ -23,6 +23,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 
 from . import gherkin
+from . import graphcheck as _graphcheck
+from . import indexing as _indexing
 from . import loop
 from .config import Config
 
@@ -82,7 +84,7 @@ Feature: Recipe index
     Then the output lists the recipe files
   Scenario: Step 2 - Write the index
     When I write recipe-index.md indexing the listed recipes
-    Then "recipe-index.md" covers the files from step 1
+    Then "recipe-index.md" indexes the files from step 1
 
 Task: Move the 2025 meeting notes into an archive folder
 Feature: Archive meeting notes
@@ -107,6 +109,47 @@ Feature: Reading guide
     When I read each article from step 1 and write guide.md with one entry per article
     Then "guide.md" covers the files from step 1
 
+Task: Build a catalog of the songs in this folder, one entry per song with its length
+Feature: Song catalog
+  Scenario: Step 1 - List the songs
+    Intent: know exactly which songs the catalog must cover
+    When I list the files in the folder
+    Then the output lists the song files
+  Scenario: Step 2 - Read the first group of songs
+    When I read the first three songs from step 1 and note each song's length
+    Then the output gives a length for each song read
+  Scenario: Step 3 - Read the remaining songs
+    When I read the remaining songs from step 1 and note each song's length
+    Then the output gives a length for each song read
+  Scenario: Step 4 - Write the catalog
+    Intent: one entry per song with its length, covering every song from step 1
+    When I write catalog.md with one entry per song from the notes in steps 2 and 3
+    Then "catalog.md" covers the files from step 1
+
+Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
+Feature: Quarterly total
+  Scenario: Step 1 - Read the monthly files
+    When I read "jan.txt", "feb.txt", and "mar.txt"
+    Then the output shows the amount from each file
+  Scenario: Step 2 - Write the total
+    When I add the three amounts and write the total to total.txt
+    Then "total.txt" contains the computed sum of the three amounts
+
+Task: Make an inventory of the seed packets in this folder and what each plant is for, in a file I can keep
+Feature: Seed packet inventory
+  Scenario: Step 1 - List the packets
+    Intent: know exactly which packets the inventory must cover
+    When I list the files in the folder
+    Then the output lists the packet files
+  Scenario: Step 2 - Write the inventory
+    Intent: each entry names the plant and what it is for, in a file the user can keep
+    When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
+    Then "seed-inventory.txt" indexes the files from step 1
+
+In the catalog example, note the shape: the per-item steps only gather,
+and the final step carries the covers check against the listing step.
+Splitting the work across steps never splits away the completeness check.
+
 """
 
 
@@ -120,7 +163,15 @@ def build_planner_prompt(task: str, tool_names: list[str],
                    "the harness just ran):\n" + discovery
                    + "\nBase the plan's categories, values, and groupings on "
                      "these findings, not on assumptions about what such a "
-                     "workspace usually contains.\n")
+                     "workspace usually contains.\n"
+                   + "\nReconcile the findings against the workspace contents "
+                     "listed above before planning: a workspace file that "
+                     "is absent from the findings is unexamined, not "
+                     "automatically out of scope. If an unexamined file "
+                     "could belong to this task, account for it in the plan "
+                     "(list it, read it, or name it) or explicitly exclude "
+                     "it; do not describe a set drawn only from the findings "
+                     "as complete, or as all of the files.\n")
     return f"""You are a planner. Break the task below into a short sequence of small steps.
 Write the plan in Gherkin — one Scenario per step, in order.
 
@@ -144,9 +195,25 @@ Rules:
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
 - When a step writes a document derived from an earlier step's file listing
-  (a summary, strategy, report, or index of those files), write its Then as
+  (a summary, strategy, or report about those files), write its Then as
   `"out.txt" covers the files from step N` (N = the listing step) — the
   harness checks the document actually mentions the source files.
+- Do not substitute one `contains` Then per source file for `covers` on
+  a document derived from a listing. Per-file clauses cannot prove the
+  document covers the listing; use the single `covers` clause instead.
+- When a step's whole job is to read every file from an earlier listing
+  step and compile an index, inventory, or catalog with a short
+  description of each file, write its Then as
+  `"out.txt" indexes the files from step N` instead of `covers`. For an
+  `indexes` step the harness builds that file itself: it reads each
+  listed file, gets a one-line description of each, and writes the
+  target with one entry per file, so no file can be omitted. Use
+  `covers` when the step itself writes a document derived from a
+  listing in some other way.
+- Each step runs under a turn budget that scales with the operations it
+  implies: by default a base of 6 turns, plus one turn per file it must
+  read beyond that, up to a maximum of 24. If a step would need more
+  than the maximum, split it into two steps.
 - Preserve the task's intent in every step. When the task specifies what a
   deliverable must contain or be like (for example: each entry gives a name
   and a one-line description), give every step that contributes to that
@@ -197,6 +264,9 @@ class PlanStep:
     output_path: str = ""  # .harness/runs/<run>/step-NN.md (v0.8.1, issue #2)
     source_items: list = field(default_factory=list)  # names this step produced (v0.8.1 covers)
     tool_summary: str = ""  # harness-computed "tools used; output size" line
+    budget: int = 0  # effective turn budget for this step (issue #14)
+    touched_args: set = field(default_factory=set)  # dumped tool-call args
+    # from this step's completed attempts (issue #17 read coverage)
 
 
 def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
@@ -205,12 +275,53 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
         steps.append(PlanStep(
             id=i,
             instruction="\n".join(p.when)[:500],
-            done_when="\n".join(p.then)[:300],
+            # done_when is the step's verification contract: badges, lint,
+            # executor prompts, and verification all consume it. It is NOT
+            # length-capped. A 300-char cap silently truncated combined
+            # Then clauses mid-clause (issue #7: a six-clause step lost its
+            # tail), so every clause is preserved exactly.
+            done_when="\n".join(p.then),
             given="\n".join(p.given)[:300],
             title=(p.title or "")[:120],
             intent=(p.intent or "")[:300],
         ))
+    for s in steps:
+        s.budget = step_budget(s, steps)
     return steps
+
+
+# Dynamic per-step budgets (issue #14): a flat cap judged every step
+# against the same number of turns no matter how much work its own plan
+# implied, so a compile step needing 7 reads, a write, and the final
+# answer died against a cap of 6 with its deliverable unwritten. The
+# budget now counts the planned operations deterministically: every
+# distinct file operand the step names, plus, for each earlier step it
+# draws on, one turn to read that step's stored record and one turn per
+# source item that step produced, plus slack for the write and the
+# final answer. Floored at the configured base, capped at the ceiling;
+# the repeat-call breaker, the error limits, and the pushback refunds
+# still bound a step that wanders instead of working.
+_BUDGET_SLACK = 2
+
+
+def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
+    """Effective turn budget for one plan step, from its planned work."""
+    import re as _re
+    base = getattr(cfg, "step_max_steps", 6) if cfg is not None else 6
+    ceiling = (getattr(cfg, "step_budget_ceiling", 24)
+               if cfg is not None else 24)
+    text = "\n".join([step.given or "", step.intent or "",
+                      step.instruction or "", step.done_when or ""])
+    operands = {t for t in _re.findall(r'"([^"\n]+)"', text)
+                if t.strip() and not any(c.isspace() for c in t)}
+    ops = len(operands)
+    by_id = {s.id: s for s in steps}
+    for ref in {int(m) for m in _re.findall(r"step\s+(\d+)", text,
+                                            flags=_re.IGNORECASE)}:
+        prior = by_id.get(ref)
+        if prior is not None and prior.id < step.id:
+            ops += 1 + len(prior.source_items or [])
+    return max(base, min(ceiling, ops + _BUDGET_SLACK))
 
 
 def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
@@ -240,7 +351,9 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
             last_problem = err
         else:
             steps = to_plan_steps(plan)
-            findings = _planlint.lint_plan(task, steps)
+            findings = _planlint.lint_plan(
+                task, steps,
+                workspace_files=_root_workspace_files(cfg.workspace))
             by_step: dict[int, list] = {}
             for f in findings:
                 by_step.setdefault(f.step_id, []).append(f.as_dict())
@@ -295,8 +408,51 @@ def propose(task: str, cfg: Config, chat_fn=None
 READ_ONLY_TOOLS = ("list_dir", "read_file", "grep_files")
 
 
+def _is_exhaustive_task(task: str) -> bool:
+    """True when the task asks for an account of the whole workspace:
+    a list, inventory, index, or catalogue, or all / every / each of the
+    files (or documents, papers, records). Those tasks make every
+    root-level file potentially in scope, so discovery for them must be
+    exhaustive rather than a sample (issue #6). Category, strategy, and
+    value tasks carry none of these cues and keep sampling."""
+    import re
+    low = (task or "").lower()
+    if re.search(r"\b(list|listing|inventory|index|catalogue|catalog)\b",
+                 low):
+        return True
+    return bool(re.search(
+        r"\b(all|every|each)\b[^.\n]{0,40}"
+        r"\b(files?|documents?|papers?|records?)\b", low))
+
+
+def _discovery_steering(task: str) -> str:
+    """The task-sensitive sampling rule for the discovery prompt.
+
+    Exhaustive tasks (see _is_exhaustive_task) get a listing step and a
+    full accounting of the workspace root; the sampling rule that is
+    right for category, strategy, and value discovery is expressly
+    withdrawn for them, because a sample silently drops files the task
+    asked about (issue #6, Tomas's omitted water-heater manual)."""
+    if _is_exhaustive_task(task):
+        return ("- This task is exhaustive: it asks for a list, an "
+                "inventory, or an index, or for all or every file. "
+                "Sampling is not acceptable for this task.\n"
+                "- Start with a listing step that lists the files at "
+                "the workspace root.\n"
+                "- Account for every file at the workspace root: each "
+                "one must be read, searched, named in the plan, or "
+                "explicitly excluded with a reason. No root file may "
+                "be left unaccounted for.")
+    return ("- Sampling is acceptable for this task: it asks what "
+            "categories, a strategy, or values should be, not for an "
+            "account of every file. Read the files most likely to "
+            "decide the plan's categories or values; do not read "
+            "everything.")
+
+
 def build_discovery_prompt(task: str, workspace: str | None = None) -> str:
     digest = workspace_digest(workspace)
+    steering = _discovery_steering(task)
     return f"""You are planning a read-only discovery pass. The task below
 cannot be planned well yet: the planner first needs facts about the
 workspace. Write a short Gherkin plan, 1 to 4 steps, whose steps only
@@ -313,8 +469,7 @@ Rules:
 - Only list, read, and search. No writes, no moves, no commands.
 - Each step learns something the real plan needs: what files exist,
   what the important ones contain, how things are structured.
-- Read the files most likely to decide the plan's categories or values;
-  do not read everything.
+{steering}
 - Return ONLY the Gherkin, no other text.
 {digest}Task: {task}"""
 
@@ -345,17 +500,62 @@ def request_discovery_plan(task: str, cfg: Config, chat_fn
     return None, last_problem
 
 
+def _root_workspace_files(workspace: str | None) -> list[str]:
+    """Sorted names of the regular files at the workspace root.
+
+    Root only, matching the digest's view of the workspace: folders and
+    their contents are not files the discovery pass was expected to read,
+    and `.harness/` bookkeeping is never a workspace file."""
+    from pathlib import Path
+    if not workspace:
+        return []
+    try:
+        entries = sorted(Path(workspace).iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
+    return [p.name for p in entries if p.name != ".harness" and p.is_file()]
+
+
+def unexamined_workspace_files(workspace: str | None, discovery_steps=None,
+                               findings: str = "") -> list[str]:
+    """Root workspace files the discovery pass never accounted for.
+
+    Deterministic reconciliation at the Tier 2 handoff (issue #6): a
+    file counts as accounted for when its name appears in the discovery
+    plan (any step's instruction, done_when, given, title, or intent)
+    or in the discovery records handed over as findings. That one test
+    covers every way a file can be accounted for: listed (a list_dir
+    record names it), read, searched, named in the plan, or explicitly
+    excluded (an exclusion still names the file). A file named nowhere
+    was not examined, whatever the plan claims about "all" files."""
+    texts = [findings or ""]
+    for s in discovery_steps or []:
+        texts.append("\n".join([s.instruction or "", s.done_when or "",
+                                s.given or "", s.title or "", s.intent or ""]))
+    accounted = "\n".join(texts)
+    return [name for name in _root_workspace_files(workspace)
+            if name not in accounted]
+
+
 def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
                             total_cap: int = 8000,
-                            per_step_cap: int = 2500) -> str:
+                            per_step_cap: int = 2500,
+                            discovery_steps=None) -> str:
     """The findings handed to the replan: excerpts of the discovery run's
     stored step records (tool results verbatim, where the facts live),
     bounded so discovery cannot become context-stuffing. Truncation is
-    announced with a pointer to the full record."""
+    announced with a pointer to the full record.
+
+    The excerpts are followed by a deterministic unexamined-files
+    section (issue #6): the root workspace files compared against the
+    FULL records and the discovery plan, so excerpt truncation cannot
+    hide a file, and a file discovery never touched is named as
+    unexamined instead of silently absent from the handoff."""
     from pathlib import Path
     if not run_id:
         return ""
     parts: list[str] = []
+    full_records: list[str] = []
     used = 0
     for i in range(1, n_steps + 1):
         rel = f".harness/runs/{run_id}/step-{i:02d}.md"
@@ -363,6 +563,7 @@ def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
         if not p.is_file():
             continue
         text = p.read_text(errors="replace")
+        full_records.append(text)
         if len(text) > per_step_cap:
             text = text[:per_step_cap] + f"\n[truncated; full record: {rel}]"
         if used + len(text) > total_cap:
@@ -372,7 +573,24 @@ def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
             used += len(text)
         if used >= total_cap:
             break
-    return "\n\n".join(parts)
+    body = "\n\n".join(parts)
+    if _root_workspace_files(workspace):
+        missing = unexamined_workspace_files(
+            workspace, discovery_steps=discovery_steps,
+            findings="\n".join(full_records))
+        if missing:
+            section = ("Unexamined workspace files (the harness compared "
+                       "the workspace root against the discovery plan and "
+                       "records; these files were not listed, read, "
+                       "searched, named, or explicitly excluded during "
+                       "discovery, so nothing is known about them):\n"
+                       + "\n".join(f"- {name}" for name in missing))
+        else:
+            section = ("Unexamined workspace files: none. Every file at "
+                       "the workspace root was accounted for by the "
+                       "discovery plan or its records.")
+        body = (body + "\n\n" + section) if body else section
+    return body
 
 
 def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
@@ -390,7 +608,8 @@ def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
                               "findings": ""}
     run = execute_plan(task, dsteps, cfg, chat_fn=chat_fn,
                        on_event=on_event, only_tools=list(READ_ONLY_TOOLS))
-    findings = discovery_findings_text(cfg.workspace, run.run_id, len(dsteps))
+    findings = discovery_findings_text(cfg.workspace, run.run_id, len(dsteps),
+                                       discovery_steps=dsteps)
     text, steps = request_plan(task, list(registry), chat_fn, cfg,
                                discovery=findings)
     info = {"discovery_run_id": run.run_id,
@@ -411,7 +630,7 @@ class PlannedRun:
         return {"run_id": self.run_id,
                 "steps": [
             {"id": s.id, "instruction": s.instruction, "done_when": s.done_when,
-             "intent": s.intent,
+             "intent": s.intent, "budget": s.budget,
              "status": s.status, "result": s.result[:500],
              "verify": s.verify, "lint": s.lint,
              "verify_waived": s.verify_waived,
@@ -477,6 +696,63 @@ def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _index_describe(chat_fn, name: str, content: str) -> str:
+    """One per-file description call for the indexing primitive.
+
+    Returns the model's raw reply, or "" on any failure (the indexing
+    build treats an empty description as a decline, and the step
+    falls back to its normal executor sub-run)."""
+    try:
+        msg = chat_fn([{"role": "user",
+                        "content": _indexing.describe_prompt(name,
+                                                             content)}],
+                      None)
+    except Exception:
+        return ""
+    return (msg.get("content") or "") if isinstance(msg, dict) else ""
+
+
+def _graph_contract_block(task: str, step: PlanStep,
+                          steps: list[PlanStep]) -> str:
+    """The step's node contract from the plan graph, for its prompt.
+
+    Experimental (Config.graph_contracts): the executor is told, in
+    field terms, what inputs it may rely on and who produced them, and
+    what outputs it must produce, instead of inferring the data flow
+    from prose. The graph is computed from the plan text alone (no
+    workspace scan), so the contract is the same graph the approval
+    display derives from the plan, and it does not drift as steps
+    create files. Returns "" when the step has no fields."""
+    graph = _graphcheck.build_graph(task, steps)
+    node = next((n for n in graph.nodes if n.step_id == step.id), None)
+    if node is None or (not node.inputs and not node.outputs):
+        return ""
+    producers = {e.field: e.producer for e in graph.edges
+                 if e.consumer == step.id}
+
+    def describe(label: str) -> str:
+        if label in producers:
+            return f'"{label}" (produced by step {producers[label]})'
+        if label.startswith("files from step ") \
+                or (label.startswith("step ") and label.endswith(" output")):
+            return f'"{label}"'
+        return f'"{label}" (from the task or the workspace)'
+
+    lines = ["Your place in the plan graph (computed from the plan, "
+             "deterministic):"]
+    if node.inputs:
+        lines.append("  Inputs available to you: "
+                     + "; ".join(describe(i) for i in node.inputs) + ".")
+    if node.outputs:
+        lines.append("  Outputs this step must produce: "
+                     + "; ".join(f'"{o}"' for o in node.outputs) + ".")
+        lines.append("  This step is complete only when every output "
+                     "above exists with its content in place, under "
+                     "exactly that name. Later steps consume these "
+                     "outputs as named.")
+    return "\n".join(lines) + "\n"
+
+
 def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     """Build the DONE gate for one step (v0.8.1), or None when the step has
     no completed prior steps with stored outputs.
@@ -496,7 +772,20 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     (contains, covers, and kin; a bare exists proves nothing, the
     founding stub passed it), the suspicion is answered and the gate
     stays silent. An attested or failing Then keeps the pushback
-    exactly as before."""
+    exactly as before.
+
+    Coverage stage (issue #17): when the step carries a covers clause,
+    the listing step's source items are compared against the files read
+    so far in the run: completed prior steps' recorded tool calls plus
+    this sub-run's. Step scope is soft, so an earlier gather step's
+    reads count; what matters is that the run has actually opened every
+    file the deliverable claims to cover. An unread source file draws a
+    pushback naming it. This stage ignores verify_now on purpose: a
+    deliverable can mention a file it never read, and mentions are not
+    evidence. It shares the gate's existing budget of two pushbacks per
+    sub-run (the loop cap is unchanged) and is evaluated before stage 2,
+    because "read these files" is the more specific instruction when
+    both apply."""
     priors = [s.output_path for s in steps
               if s.id < step.id and s.status == "done" and s.output_path]
     if not priors:
@@ -523,6 +812,53 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
                     f"file ({step.output_path}) is not one of these sources: the "
                     f"harness writes it after you finish, it does not exist yet, "
                     f"so do not try to read it.")
+        # Coverage stage (issue #17): a covers clause claims the
+        # deliverable accounts for a listing step's files. Compare those
+        # items against everything read so far in the run: prior steps'
+        # recorded calls (touched_args) plus this sub-run's calls.
+        import re as _re
+        from . import verify as _verify
+        by_id = {s.id: s for s in steps}
+        items: list[str] = []
+        targets: list[str] = []
+        for then in (step.done_when or "").split("\n"):
+            then = then.strip()
+            if not then or _verify.match_verifier(then) != "covers":
+                continue
+            m = _re.search(r"step\s+(\d+)", then)
+            if not m:
+                continue
+            src = by_id.get(int(m.group(1)))
+            if src is None:
+                continue
+            parsed = _verify.parse_then(then)
+            if parsed and parsed[1]:
+                targets.append(parsed[1])
+            for item in src.source_items or []:
+                if item not in items:
+                    items.append(item)
+        if items:
+            blobs = set()
+            for s in steps:
+                if s.id < step.id:
+                    blobs.update(s.touched_args or set())
+            for s in sub_steps:
+                if s.tool and s.args:
+                    blobs.add(_json.dumps(s.args, default=str))
+            missing = [i for i in items
+                       if not any(i in b for b in blobs)]
+            if missing:
+                claim = (f'"{targets[0]}" covers' if targets
+                         else "This step covers")
+                return (f"HARNESS: {claim} the files from an earlier "
+                        f"listing step, but these files have not been read "
+                        f"yet in this run: {', '.join(missing)}. Work about "
+                        f"a file must come from its actual contents, not "
+                        f"from its name in a list. Read each named file now "
+                        f"with read_file, then redo this step from what "
+                        f"they contain. If a named file genuinely is not a "
+                        f"source for this step, answer DONE: again and say "
+                        f"why in one sentence.")
         if any(s.tool and not names_prior(s) for s in sub_steps[read_idx + 1:]):
             return None  # real work happened after the read: grounded
         # Before demanding the redo, look at the deliverable (surgical
@@ -574,7 +910,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     from . import verify as _verify
     vctx = _verify.VerifyContext(
         jail=jail, step_id=step.id, task=task,
-        prior_items={s.id: list(s.source_items) for s in steps if s.source_items})
+        prior_items={s.id: list(s.source_items) for s in steps if s.source_items},
+        intent=step.intent or "")
     feedback = ""
     last_vres = None
     attempts: list[dict] = []
@@ -598,13 +935,32 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "covers", "has_lines")
+                                  "covers", "indexes", "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)
+    # Experimental: the step's plan-graph node contract rides in its
+    # prompt when enabled. Computed once here; the graph derives from
+    # plan text, so the verification retry sees the same contract.
+    contract = (_graph_contract_block(task, step, steps)
+                if getattr(cfg, "graph_contracts", False) else "")
+    # Issue #14: this step's turn budget is computed from its planned
+    # operations now that prior steps' source items are known, and the
+    # same budget governs the verification retry.
+    step.budget = step_budget(step, steps, cfg)
+    sub_cfg = replace(cfg, max_steps=step.budget)
 
     def persist(status: str):
         if attempts:
+            # Record what this step's attempts touched, for the read
+            # coverage gate stage (issue #17): later steps compare a
+            # covers clause's source items against the run's reads.
+            import json as _json
+            for att in attempts:
+                for s in att.get("sub_steps") or []:
+                    if s.tool and s.args:
+                        step.touched_args.add(
+                            _json.dumps(s.args, default=str))
             counts: dict[str, int] = {}
             n_lines = 0
             for s in attempts[-1].get("sub_steps") or []:
@@ -627,6 +983,52 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         except Exception:
             pass  # the store is a record, never a reason to fail real work
 
+    # Indexing primitive: when the step carries an `indexes` clause,
+    # the harness tries to build the target itself (enumerate the
+    # source step's items, one description call per file, write the
+    # index) before any executor sub-run. Success skips the sub-run
+    # entirely; a declined build (unreadable file, empty description)
+    # or a failed verification of the step's other Thens falls
+    # through to the normal loop below, with any verification failure
+    # as its feedback. Placed here, after persist() exists.
+    clause = _indexing.clause_for(step)
+    if clause is not None:
+        target, source_id = clause
+        src_step = next((s for s in steps if s.id == source_id), None)
+        items = list(src_step.source_items) if src_step is not None else []
+        records = None
+        if items:
+            records = _indexing.build_index(
+                jail.root, items,
+                lambda name, content: _index_describe(chat_fn, name,
+                                                      content))
+        if records is not None:
+            dest = jail.resolve(target)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(_indexing.render_index(records))
+            step.result = (f"DONE: indexed {len(records)} files into "
+                           f"{target} with the harness indexing "
+                           f"primitive.")
+            step.source_items = list(items)
+            import json as _json
+            for name in items:
+                step.touched_args.add(_json.dumps({"path": name}))
+            step.touched_args.add(_json.dumps({"path": target}))
+            vres = _verify.verify_step(thens, vctx)
+            step.verify = [{"then": c.then, "verifier": c.verifier,
+                            "ok": c.ok, "detail": c.detail}
+                           for c in vres.checks]
+            attempts.append({"sub_steps": [], "answer": step.result,
+                             "verify_checks": list(step.verify)})
+            emit("step_verify", step, vres)
+            if vres.ok:
+                step.status = "done"
+                persist("done")
+                emit("step_done", step)
+                return True
+            feedback = "; ".join(c.detail for c in vres.checks
+                                  if not c.ok)
+
     for _ in range(1 + cfg.verify_retries):
         prompt = (f"Overall goal: {task}\n"
                   f"You are executing step {step.id} of {n_steps}. "
@@ -639,6 +1041,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             prompt += f"Intent of this step: {step.intent}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
+        if contract:
+            prompt += contract
         if store is not None and step.output_path:
             # Wording matters (field, 2026-10-03): "Your full output will be
             # stored at..." read as a write instruction and a step wrote its
@@ -655,7 +1059,6 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                        f"Fix exactly this and try again.\n")
         prompt += 'When this step is complete, answer starting with "DONE:".'
 
-        sub_cfg = replace(cfg, max_steps=cfg.step_max_steps)
         try:
             r = loop.run(prompt, sub_cfg, chat_fn=chat_fn,
                          on_step=lambda s: emit("step_sub", step, s),

@@ -353,17 +353,62 @@ def request_discovery_plan(task: str, cfg: Config, chat_fn
     return None, last_problem
 
 
+def _root_workspace_files(workspace: str | None) -> list[str]:
+    """Sorted names of the regular files at the workspace root.
+
+    Root only, matching the digest's view of the workspace: folders and
+    their contents are not files the discovery pass was expected to read,
+    and `.harness/` bookkeeping is never a workspace file."""
+    from pathlib import Path
+    if not workspace:
+        return []
+    try:
+        entries = sorted(Path(workspace).iterdir(), key=lambda p: p.name)
+    except OSError:
+        return []
+    return [p.name for p in entries if p.name != ".harness" and p.is_file()]
+
+
+def unexamined_workspace_files(workspace: str | None, discovery_steps=None,
+                               findings: str = "") -> list[str]:
+    """Root workspace files the discovery pass never accounted for.
+
+    Deterministic reconciliation at the Tier 2 handoff (issue #6): a
+    file counts as accounted for when its name appears in the discovery
+    plan (any step's instruction, done_when, given, title, or intent)
+    or in the discovery records handed over as findings. That one test
+    covers every way a file can be accounted for: listed (a list_dir
+    record names it), read, searched, named in the plan, or explicitly
+    excluded (an exclusion still names the file). A file named nowhere
+    was not examined, whatever the plan claims about "all" files."""
+    texts = [findings or ""]
+    for s in discovery_steps or []:
+        texts.append("\n".join([s.instruction or "", s.done_when or "",
+                                s.given or "", s.title or "", s.intent or ""]))
+    accounted = "\n".join(texts)
+    return [name for name in _root_workspace_files(workspace)
+            if name not in accounted]
+
+
 def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
                             total_cap: int = 8000,
-                            per_step_cap: int = 2500) -> str:
+                            per_step_cap: int = 2500,
+                            discovery_steps=None) -> str:
     """The findings handed to the replan: excerpts of the discovery run's
     stored step records (tool results verbatim, where the facts live),
     bounded so discovery cannot become context-stuffing. Truncation is
-    announced with a pointer to the full record."""
+    announced with a pointer to the full record.
+
+    The excerpts are followed by a deterministic unexamined-files
+    section (issue #6): the root workspace files compared against the
+    FULL records and the discovery plan, so excerpt truncation cannot
+    hide a file, and a file discovery never touched is named as
+    unexamined instead of silently absent from the handoff."""
     from pathlib import Path
     if not run_id:
         return ""
     parts: list[str] = []
+    full_records: list[str] = []
     used = 0
     for i in range(1, n_steps + 1):
         rel = f".harness/runs/{run_id}/step-{i:02d}.md"
@@ -371,6 +416,7 @@ def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
         if not p.is_file():
             continue
         text = p.read_text(errors="replace")
+        full_records.append(text)
         if len(text) > per_step_cap:
             text = text[:per_step_cap] + f"\n[truncated; full record: {rel}]"
         if used + len(text) > total_cap:
@@ -380,7 +426,24 @@ def discovery_findings_text(workspace: str, run_id: str, n_steps: int,
             used += len(text)
         if used >= total_cap:
             break
-    return "\n\n".join(parts)
+    body = "\n\n".join(parts)
+    if _root_workspace_files(workspace):
+        missing = unexamined_workspace_files(
+            workspace, discovery_steps=discovery_steps,
+            findings="\n".join(full_records))
+        if missing:
+            section = ("Unexamined workspace files (the harness compared "
+                       "the workspace root against the discovery plan and "
+                       "records; these files were not listed, read, "
+                       "searched, named, or explicitly excluded during "
+                       "discovery, so nothing is known about them):\n"
+                       + "\n".join(f"- {name}" for name in missing))
+        else:
+            section = ("Unexamined workspace files: none. Every file at "
+                       "the workspace root was accounted for by the "
+                       "discovery plan or its records.")
+        body = (body + "\n\n" + section) if body else section
+    return body
 
 
 def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
@@ -398,7 +461,8 @@ def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
                               "findings": ""}
     run = execute_plan(task, dsteps, cfg, chat_fn=chat_fn,
                        on_event=on_event, only_tools=list(READ_ONLY_TOOLS))
-    findings = discovery_findings_text(cfg.workspace, run.run_id, len(dsteps))
+    findings = discovery_findings_text(cfg.workspace, run.run_id, len(dsteps),
+                                       discovery_steps=dsteps)
     text, steps = request_plan(task, list(registry), chat_fn, cfg,
                                discovery=findings)
     info = {"discovery_run_id": run.run_id,

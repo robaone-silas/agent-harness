@@ -107,6 +107,47 @@ Feature: Reading guide
     When I read each article from step 1 and write guide.md with one entry per article
     Then "guide.md" covers the files from step 1
 
+Task: Build a catalog of the songs in this folder, one entry per song with its length
+Feature: Song catalog
+  Scenario: Step 1 - List the songs
+    Intent: know exactly which songs the catalog must cover
+    When I list the files in the folder
+    Then the output lists the song files
+  Scenario: Step 2 - Read the first group of songs
+    When I read the first three songs from step 1 and note each song's length
+    Then the output gives a length for each song read
+  Scenario: Step 3 - Read the remaining songs
+    When I read the remaining songs from step 1 and note each song's length
+    Then the output gives a length for each song read
+  Scenario: Step 4 - Write the catalog
+    Intent: one entry per song with its length, covering every song from step 1
+    When I write catalog.md with one entry per song from the notes in steps 2 and 3
+    Then "catalog.md" covers the files from step 1
+
+Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
+Feature: Quarterly total
+  Scenario: Step 1 - Read the monthly files
+    When I read "jan.txt", "feb.txt", and "mar.txt"
+    Then the output shows the amount from each file
+  Scenario: Step 2 - Write the total
+    When I add the three amounts and write the total to total.txt
+    Then "total.txt" contains the computed sum of the three amounts
+
+Task: Make an inventory of the seed packets in this folder and what each plant is for, in a file I can keep
+Feature: Seed packet inventory
+  Scenario: Step 1 - List the packets
+    Intent: know exactly which packets the inventory must cover
+    When I list the files in the folder
+    Then the output lists the packet files
+  Scenario: Step 2 - Write the inventory
+    Intent: each entry names the plant and what it is for, in a file the user can keep
+    When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
+    Then "seed-inventory.txt" covers the files from step 1
+
+In the catalog example, note the shape: the per-item steps only gather,
+and the final step carries the covers check against the listing step.
+Splitting the work across steps never splits away the completeness check.
+
 """
 
 

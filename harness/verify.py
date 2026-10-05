@@ -399,7 +399,105 @@ def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
                 result = v.check(m, ctx)
                 break
         if result is None:
-            result = CheckResult(then, True, "attest",
-                                 "no verifier matched — taking the model's word")
+            result = _attest_or_floor(then, ctx)
         checks.append(result)
     return StepVerify(ok=all(c.ok for c in checks), checks=checks)
+
+
+_QUOTED = re.compile(r'''"([^"]*)"|'([^']*)'|`([^`]*)`''')
+# Absence intent: the clause wants the named file NOT there, so a
+# missing file is the success state, never a floor failure.
+_ABSENCE_INTENT = re.compile(
+    r"not\s+exist|should\s+not|does\s+not|n't\s+exist|no\s+longer|"
+    r"\babsent\b|\bremoved\b|\bdeleted\b", re.IGNORECASE)
+
+
+def _named_file(then: str) -> str | None:
+    """The workspace file a Then clause names, when it names one in
+    quotes and the quoted text is path-shaped (no whitespace, and
+    either a slash or a dotted extension). Quoted prose ("done",
+    a quoted phrase) is not a file. Pure phrasing; never touches
+    the workspace."""
+    m = _QUOTED.search(then or "")
+    if not m:
+        return None
+    name = next(g for g in m.groups() if g is not None).strip()
+    if not name or any(c.isspace() for c in name):
+        return None
+    if "/" in name or re.search(r"\.[\w-]+$", name):
+        return name
+    return None
+
+
+def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
+    """The attestation fallback, with the issue #22 existence floor.
+
+    Field failure (Daniel Okafor, 2026-10-04): a prose contains
+    clause attested ok while the file it named had never been
+    created, and the run reported done with no deliverable. The
+    asserted *content* may be prose no verifier can match, but the
+    named file's *existence* is always machine-checkable, so a
+    clause naming a quoted file cannot pass on trust while that
+    file is missing. The failure feeds the step's normal retry with
+    the exact missing path. Absence-intent clauses are exempt:
+    there the missing file is the success state."""
+    named = _named_file(then)
+    if named and not _ABSENCE_INTENT.search(then):
+        p, err = _resolve(ctx, named)
+        if not err and p is not None and not p.exists():
+            return CheckResult(
+                then, False, "attest",
+                f"named file {named!r} does not exist — a clause "
+                f"about a file cannot pass on trust while the file "
+                f"is missing; create {named!r} with the promised "
+                f"content")
+    return CheckResult(then, True, "attest",
+                       "no verifier matched — taking the model's word")
+
+
+def promised_deliverables(steps) -> list[str]:
+    """The files a plan promises will exist when the run ends: the
+    subject file of every exists / covers / indexes / contains-family
+    Then, plus any quoted file a prose Then names, minus anything a
+    not_exists (or absence-intent) Then names. Derived from the
+    Thens alone, sorted for determinism. Issue #22: this set is the
+    run's contract with the user, audited at the end of the run."""
+    promised: list[str] = []
+    excluded: set[str] = set()
+    for s in steps:
+        for clause in (s.done_when or "").split("\n"):
+            clause = clause.strip()
+            if not clause:
+                continue
+            parsed = parse_then(clause)
+            if parsed:
+                name, path, _value = parsed
+                if path is None:
+                    continue
+                if name == "not_exists":
+                    excluded.add(path)
+                elif path not in promised:
+                    promised.append(path)
+                continue
+            named = _named_file(clause)
+            if named is None:
+                continue
+            if _ABSENCE_INTENT.search(clause):
+                excluded.add(named)
+            elif named not in promised:
+                promised.append(named)
+    return sorted(p for p in promised if p not in excluded)
+
+
+def missing_deliverables(steps, jail: Jail) -> list[str]:
+    """Promised deliverables that do not exist in the workspace.
+    Paths escaping the jail cannot be judged and are skipped."""
+    missing: list[str] = []
+    for rel in promised_deliverables(steps):
+        try:
+            p = jail.resolve(rel)
+        except Refusal:
+            continue
+        if not p.exists():
+            missing.append(rel)
+    return missing

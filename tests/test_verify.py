@@ -156,11 +156,18 @@ def t_verify_exhausted():
     events = []
     r = planner.execute_plan("do the thing", [step], cfg, chat_fn=fake,
                              on_event=lambda k, *a: events.append(k))
-    check("exhausted waives, run continues",
-          r.status == "done" and step.status == "done", r.status)
+    check("exhausted waives at step level, plan continues",
+          step.status == "done", step.status)
     check("waiver recorded", step.verify_waived is True, str(step.verify_waived))
     check("waiver event emitted", "step_verify_waived" in events, str(events))
-    check("calls bounded", fake.calls["n"] == 3, str(fake.calls["n"]))
+    # Issue #22 boundary: the step waives, but the run may not report
+    # done while the file the plan promised ("a.txt" exists) was never
+    # created. The deliverable audit ends the run as a failure.
+    check("run fails the deliverable audit",
+          r.status == "step_failed" and "a.txt" in r.answer, r.status)
+    check("audit event emitted", "deliverables_missing" in events,
+          str(events))
+    check("calls bounded", fake.calls["n"] == 2, str(fake.calls["n"]))
     shutil.rmtree(d)
 
 

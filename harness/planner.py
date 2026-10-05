@@ -261,6 +261,7 @@ class PlanStep:
     verify: list = field(default_factory=list)  # per-Then check records (v0.7)
     lint: list = field(default_factory=list)  # planlint findings (dicts)
     verify_waived: bool = False  # verification failed but step accepted anyway
+    done_via_world_state: bool = False  # sub-run missed DONE; verification passed (2026-10-04 ruling)
     output_path: str = ""  # .harness/runs/<run>/step-NN.md (v0.8.1, issue #2)
     source_items: list = field(default_factory=list)  # names this step produced (v0.8.1 covers)
     tool_summary: str = ""  # harness-computed "tools used; output size" line
@@ -634,6 +635,7 @@ class PlannedRun:
              "status": s.status, "result": s.result[:500],
              "verify": s.verify, "lint": s.lint,
              "verify_waived": s.verify_waived,
+             "done_via_world_state": s.done_via_world_state,
              "output_path": s.output_path} for s in self.steps]}
 
 
@@ -1073,9 +1075,44 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             return False
         step.result = (r.answer or "")[:800]
         if r.status != "done":
+            # World-state override (Ansel's ruling, 2026-10-04, the
+            # Tomas protocol question): a sub-run that ended at the
+            # turn limit with a real final answer missed the DONE
+            # protocol, but the protocol token adds no information
+            # about the world. Judge the step on the world instead:
+            # run verification exactly as after DONE, and if every
+            # clause passes, the step is done, recorded as such.
+            # Attested clauses count when they pass under the current
+            # rules (existence floor included): a DONE ending with
+            # the same verification is already accepted, so the same
+            # verification after a protocol miss stands identically.
+            # A dead run gets no override: consecutive tool errors
+            # (error_limit), a model error, or a final summary call
+            # that itself failed leaves nothing finished to judge.
+            vres = None
+            answer = (r.answer or "").strip()
+            if (r.status == "max_steps" and answer
+                    and not answer.startswith("(summary call failed")
+                    and not answer.startswith("(no summary)")):
+                step.source_items = _verify.collect_step_items(
+                    list(r.steps))
+                vres = _verify.verify_step(thens, vctx)
+                step.verify = [{"then": c.then, "verifier": c.verifier,
+                                "ok": c.ok, "detail": c.detail}
+                               for c in vres.checks]
+                emit("step_verify", step, vres)
+            attempts.append({"sub_steps": list(r.steps),
+                             "answer": r.answer or "",
+                             "verify_checks": list(step.verify)
+                             if vres is not None else []})
+            if vres is not None and vres.ok:
+                step.status = "done"
+                step.done_via_world_state = True
+                persist("done")
+                emit("step_done_world_state", step, vres)
+                emit("step_done", step)
+                return True
             step.status = "failed"
-            attempts.append({"sub_steps": list(r.steps), "answer": r.answer or "",
-                             "verify_checks": []})
             persist("failed")
             emit("step_failed", step)
             return False
@@ -1109,7 +1146,12 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
     """Execute an approved plan, one scoped step at a time. on_event(kind, *args)
     reports ("step_start", step), ("step_sub", step, sub), ("step_verify", step,
     StepVerify), ("step_verify_waived", step, StepVerify), ("step_done", step),
-    ("step_failed", step). A waived verification still counts the step done."""
+    ("step_failed", step). A waived verification still counts the step done.
+    Issue #22 adds ("deliverables_missing", [paths]): after all steps, the
+    promised-deliverable audit can still fail the run (see below). The
+    world-state override adds ("step_done_world_state", step, StepVerify):
+    a sub-run that missed DONE but whose verification passes counts the
+    step done, recorded on the step as done_via_world_state."""
     chat_fn, jail, _registry = _chat_and_tools(cfg, chat_fn)
 
     def emit(kind, *args):
@@ -1133,6 +1175,30 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
             break
 
     status = "done" if steps and all(s.status == "done" for s in steps) else "step_failed"
+
+    # Issue #22: the deliverable audit. Steps can finish with their
+    # verification waived, and a waived step still counts done, so the
+    # per-step machinery alone cannot promise the user a deliverable.
+    # Before the run may report done, every file the plan's Thens
+    # promised must exist. This judges existence only, neither plan
+    # adherence nor content quality, so it does not reopen the
+    # warn-downgrade decision: a warning can excuse a wrong check,
+    # never a missing delivery.
+    missing: list[str] = []
+    if status == "done":
+        from . import verify as _verify
+        missing = _verify.missing_deliverables(steps, jail)
+        if missing:
+            status = "step_failed"
+            emit("deliverables_missing", missing)
+    if missing:
+        answer = ("The plan's steps finished, but this run is a "
+                  "failure: promised deliverable(s) were never "
+                  "created: " + ", ".join(missing) + ". A run only "
+                  "reports done when every file the plan promises "
+                  "exists.")
+        return PlannedRun(status, answer, steps,
+                          run_id=store.run_id if store is not None else "")
 
     summary = (f"Overall goal: {task}\nPlan execution ended: {status}.\n"
                + "\n".join(f"Step {s.id} [{s.status}]: {s.instruction}"

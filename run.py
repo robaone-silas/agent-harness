@@ -97,7 +97,12 @@ def show_event(kind, *args, quiet=False):
                 if not c.ok:
                     print(f"    ! {c.detail}")
     elif kind == "step_done":
-        tag = " done (verification warnings waived)." if args[0].verify_waived else " done."
+        if getattr(args[0], "done_via_world_state", False):
+            tag = " done (accepted on world state; the sub-run ended without DONE)."
+        elif args[0].verify_waived:
+            tag = " done (verification warnings waived)."
+        else:
+            tag = " done."
         print(f"  step {args[0].id}{tag}")
         if getattr(args[0], "output_path", ""):
             print(f"    output: {args[0].output_path}")
@@ -109,6 +114,9 @@ def show_event(kind, *args, quiet=False):
                 print(f"    ! {c.detail}")
     elif kind == "step_failed":
         print(f"  step {args[0].id} FAILED.")
+    elif kind == "deliverables_missing":
+        print(f"  ! promised deliverable(s) never created: "
+              f"{', '.join(args[0])} — the run cannot report done.")
 
 
 def main() -> int:

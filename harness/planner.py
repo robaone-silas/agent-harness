@@ -218,6 +218,11 @@ Rules:
   fields' values from the source steps' records and checks every
   value survived into the deliverable. A generic prose clause is
   taken on trust and cannot catch a compilation that drops a field.
+- When a deliverable must NOT carry something the earlier steps read
+  (prices, internal notes, the contents of a specific file), write
+  its Then as `"out.txt" excludes prices from step N` or
+  `"out.txt" excludes the contents of "internal-notes.txt"`. The
+  harness checks that none of those values appear in the deliverable.
 - Each step runs under a turn budget that scales with the operations it
   implies: by default a base of 6 turns, plus one turn per file it must
   read beyond that, up to a maximum of 24. If a step would need more

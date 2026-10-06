@@ -311,6 +311,170 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
     return CheckResult(then, False, "indexes", detail)
 
 
+# --- preserves (issue #37): field-level preservation across steps ---
+#
+# A read-then-compile step's real contract is that the fields the
+# source records carry survive into the deliverable. The planner
+# cannot state that with contains (it plans before reading, so it
+# cannot quote the values) and covers only tracks file names. The
+# preserves clause names FIELDS instead; the harness harvests
+# Label: value pairs from the named steps' stored records (the
+# records embed what those steps actually read) and checks that
+# every harvested value for a named field appears in the deliverable.
+
+# A step-reference phrase inside prose: singular, plural lists, and
+# ranges. Same grammar as planner._step_refs; verify.py cannot import
+# planner (planner imports verify), so the segment parser is local,
+# like graphcheck's and planlint's own reference patterns.
+_PRES_SEG = re.compile(
+    r"\bsteps?\s+(\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)+)",
+    re.IGNORECASE)
+_PRES_TOKEN = re.compile(r"\d+|through|to|and|,|[-–—]", re.IGNORECASE)
+_PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
+
+
+def _refs_in(text: str) -> list[int]:
+    refs = [int(n) for n in re.findall(r"\bstep\s+(\d+)", text or "",
+                                       re.IGNORECASE)]
+    for m in _PRES_SEG.finditer(text or ""):
+        toks = _PRES_TOKEN.findall(m.group(1))
+        nums = [t for t in toks if t.isdigit()]
+        seps = [t for t in toks if not t.isdigit()]
+        for i, num in enumerate(nums):
+            if (i + 1 < len(nums) and i < len(seps)
+                    and seps[i].strip().lower() in _PRES_RANGE_SEPS):
+                a, b = int(num), int(nums[i + 1])
+                if 0 < abs(b - a) <= 64:
+                    refs.extend(range(min(a, b), max(a, b) + 1))
+                    continue
+            refs.append(int(num))
+    seen: set[int] = set()
+    out: list[int] = []
+    for r in refs:
+        if r not in seen:
+            seen.add(r)
+            out.append(r)
+    return out
+
+
+def _parse_fields(text: str) -> list[str]:
+    fields: list[str] = []
+    for chunk in re.split(r",|\band\b", text or "", flags=re.IGNORECASE):
+        f = re.sub(r"\s+", " ", chunk.strip().lower())
+        f = re.sub(r"^the\s+", "", f)
+        if f and re.fullmatch(r"[a-z][a-z0-9 \-]*", f) and f not in fields:
+            fields.append(f)
+    return fields
+
+
+# Label: value pairs in record-shaped text ("Customer: Elena Vasquez.
+# Item: ... Status: ready for pickup."). A value ends at a period, a
+# semicolon, or the line's end, the way the source notes punctuate.
+# Label words join on spaces only, never across lines: a bare label
+# on its own line ("Result:") must not swallow the next line's label.
+_PAIR = re.compile(
+    r"([A-Z][A-Za-z]+(?:[ \t]+[A-Z][A-Za-z]+)*)[ \t]*:[ \t]*([^\n.;]+)")
+
+
+def _harvest(text: str) -> list[tuple[str, str]]:
+    pairs: list[tuple[str, str]] = []
+    for m in _PAIR.finditer(text or ""):
+        label = re.sub(r"\s+", " ", m.group(1).strip().lower())
+        value = re.sub(r"\s+", " ", m.group(2).strip())
+        if value and (label, value) not in pairs:
+            pairs.append((label, value))
+    return pairs
+
+
+def _record_text(ctx: VerifyContext, step_no: int) -> str | None:
+    """The stored record of an earlier step in the current run, or
+    None when it cannot be read (no run store, an ad-hoc context)."""
+    try:
+        latest = ctx.jail.resolve(".harness/latest.txt")
+        if not latest.is_file():
+            return None
+        lines = latest.read_text(errors="replace").strip().splitlines()
+        if not lines or not lines[0].strip():
+            return None
+        p = ctx.jail.resolve(
+            f".harness/runs/{lines[0].strip()}/step-{step_no:02d}.md")
+        if not p.is_file():
+            return None
+        return p.read_text(errors="replace")
+    except (Refusal, OSError):
+        return None
+
+
+def _norm(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").casefold()
+
+
+@verifier("preserves",
+          rf"""^{_FILE}{_QPATH}\s+preserves?\s+(.+?)\s+from\s+(.+?)\s*[.!]?\s*$""")
+def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
+    """Field preservation: every value the named source steps read
+    for each named field must appear in the deliverable. Strict, like
+    indexes: a compilation that drops one customer's status has not
+    preserved the records. A field whose label never appears in the
+    source records cannot be checked and is reported as such, the
+    same honesty rule as covers with no measurable source list."""
+    rel = _pick(*m.groups()[0:4])
+    fields = _parse_fields(m.group(5))
+    refs = [r for r in _refs_in(m.group(6)) if r != ctx.step_id]
+    then = m.string.strip()
+    if not fields or not refs:
+        return CheckResult(then, True, "preserves",
+                           "the clause names no fields or no source "
+                           "steps — preservation not checked")
+    p, err = _resolve(ctx, rel)
+    if err:
+        return CheckResult(then, False, "preserves", err)
+    ref_list = ", ".join(str(r) for r in refs)
+    if not p.is_file():
+        return CheckResult(then, False, "preserves",
+                           f"{rel!r} is not a file — expected it to "
+                           f"preserve {', '.join(fields)} from "
+                           f"step(s) {ref_list}")
+    content = _norm(p.read_text(errors="replace"))
+    records = {r: _record_text(ctx, r) for r in refs}
+    total = 0
+    missing: list[tuple[str, int, str]] = []
+    unchecked: list[str] = []
+    for f in fields:
+        vals: list[tuple[int, str]] = []
+        for r in refs:
+            for label, value in _harvest(records.get(r) or ""):
+                if ((label == f or label.startswith(f + " "))
+                        and (r, value) not in vals):
+                    vals.append((r, value))
+        if not vals:
+            unchecked.append(f)
+            continue
+        total += len(vals)
+        for r, value in vals:
+            if _norm(value) not in content:
+                missing.append((f, r, value))
+    note = (f"; field(s) {', '.join(unchecked)} never appear in the "
+            f"source records — not checked" if unchecked else "")
+    if total == 0:
+        return CheckResult(then, True, "preserves",
+                           f"no labeled values for {', '.join(fields)} "
+                           f"found in the records of step(s) {ref_list} "
+                           f"— preservation not checked")
+    if missing:
+        shown = "; ".join(f"{f} {v!r} (step {r})"
+                          for f, r, v in missing[:8])
+        if len(missing) > 8:
+            shown += f"; and {len(missing) - 8} more"
+        return CheckResult(then, False, "preserves",
+                           f"{rel!r} is missing values the source "
+                           f"steps read: {shown}{note}")
+    return CheckResult(then, True, "preserves",
+                       f"{rel!r} preserves all {total} values of "
+                       f"{', '.join(fields)} read in step(s) "
+                       f"{ref_list}{note}")
+
+
 @verifier("contains",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?!exactly\b|the\s+exact\s+content\b){_QTEXT}\s*$""")

@@ -357,6 +357,25 @@ def _refs_in(text: str) -> list[int]:
     return out
 
 
+def _field_key(phrase: str) -> str:
+    """Comparison key for a field phrase: the last word singularized
+    (a trailing s, unless the word ends in ss, us, or is, which keeps
+    'status' intact), so a clause naming 'prices' guards records
+    labeled 'Price'."""
+    words = (phrase or "").split()
+    if words:
+        w = words[-1]
+        if (len(w) > 3 and w.endswith("s")
+                and not w.endswith(("ss", "us", "is"))):
+            words[-1] = w[:-1]
+    return " ".join(words)
+
+
+def _field_matches(field: str, label: str) -> bool:
+    f, l = _field_key(field), _field_key(label)
+    return l == f or l.startswith(f + " ")
+
+
 def _parse_fields(text: str) -> list[str]:
     fields: list[str] = []
     for chunk in re.split(r",|\band\b", text or "", flags=re.IGNORECASE):
@@ -444,7 +463,7 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
         vals: list[tuple[int, str]] = []
         for r in refs:
             for label, value in _harvest(records.get(r) or ""):
-                if ((label == f or label.startswith(f + " "))
+                if (_field_matches(f, label)
                         and (r, value) not in vals):
                     vals.append((r, value))
         if not vals:
@@ -473,6 +492,96 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
                        f"{rel!r} preserves all {total} values of "
                        f"{', '.join(fields)} read in step(s) "
                        f"{ref_list}{note}")
+
+
+# --- excludes: the negative contract, counterpart to preserves ---
+#
+# Some deliverables must NOT carry what the earlier steps read:
+# prices or internal notes leaking into a customer facing summary.
+# No positive clause can state that. excludes names the absence in
+# three forms: fields harvested from source steps' records (checked
+# in reverse, the preserves machinery), the contents of a named
+# file (its labeled values and distinctive lines), and a quoted
+# literal. The honesty rules mirror the rest of the registry: when
+# nothing can be harvested to check against, the clause passes as
+# not checked and says so; a missing deliverable fails, because the
+# step promised a scrubbed file that is not there.
+
+@verifier("excludes",
+          rf"""^{_FILE}{_QPATH}\s+excludes?\s+"""
+          rf"""(?:the\s+contents\s+of\s+{_QPATH}|{_QTEXT}|"""
+          rf"""(.+?)\s+from\s+(.+?))\s*[.!]?\s*$""")
+def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
+    g = m.groups()
+    rel = _pick(*g[0:4])
+    contents_rel = _pick(*g[4:8])
+    literal = _pick(*g[8:11])
+    then = m.string.strip()
+    p, err = _resolve(ctx, rel)
+    if err:
+        return CheckResult(then, False, "excludes", err)
+    if not p.is_file():
+        return CheckResult(then, False, "excludes",
+                           f"{rel!r} is not a file — expected a "
+                           f"deliverable that excludes the named "
+                           f"content")
+    content = _norm(p.read_text(errors="replace"))
+    leaks: list[str] = []
+    basis = ""
+    if contents_rel is not None:
+        sp, serr = _resolve(ctx, contents_rel)
+        if serr or sp is None or not sp.is_file():
+            return CheckResult(then, True, "excludes",
+                               f"source file {contents_rel!r} not "
+                               f"found — exclusion not checked")
+        src = sp.read_text(errors="replace")
+        guarded = [v for _label, v in _harvest(src)]
+        for line in src.splitlines():
+            line = re.sub(r"\s+", " ", line.strip())
+            if len(line) >= 12 and line not in guarded:
+                guarded.append(line)
+        leaks = [v for v in guarded if _norm(v) in content]
+        basis = f"content from {contents_rel!r}"
+        if not guarded:
+            return CheckResult(then, True, "excludes",
+                               f"{contents_rel!r} holds nothing "
+                               f"checkable — exclusion not checked")
+    elif literal is not None:
+        if _norm(literal) in content:
+            leaks = [literal]
+        basis = f"the text {literal!r}"
+    else:
+        fields = _parse_fields(g[11] or "")
+        refs = [r for r in _refs_in(g[12] or "") if r != ctx.step_id]
+        if not fields or not refs:
+            return CheckResult(then, True, "excludes",
+                               "the clause names no fields or no "
+                               "source steps — exclusion not checked")
+        guarded = []
+        for r in refs:
+            for label, value in _harvest(_record_text(ctx, r) or ""):
+                if any(_field_matches(f, label) for f in fields) \
+                        and value not in guarded:
+                    guarded.append(value)
+        if not guarded:
+            return CheckResult(then, True, "excludes",
+                               f"no labeled values for "
+                               f"{', '.join(fields)} found in the "
+                               f"records of step(s) "
+                               f"{', '.join(str(r) for r in refs)} "
+                               f"— exclusion not checked")
+        leaks = [v for v in guarded if _norm(v) in content]
+        basis = (f"{', '.join(fields)} from step(s) "
+                 f"{', '.join(str(r) for r in refs)}")
+    if leaks:
+        shown = "; ".join(repr(v) for v in leaks[:8])
+        if len(leaks) > 8:
+            shown += f"; and {len(leaks) - 8} more"
+        return CheckResult(then, False, "excludes",
+                           f"{rel!r} must exclude {basis}, but it "
+                           f"contains: {shown}")
+    return CheckResult(then, True, "excludes",
+                       f"{rel!r} excludes {basis}")
 
 
 @verifier("contains",

@@ -305,6 +305,50 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
 _BUDGET_SLACK = 2
 
 
+def _step_refs(text: str) -> set[int]:
+    """Step numbers a step's text draws on (issue #32).
+
+    Planners refer to earlier steps in whatever phrasing comes
+    naturally: singular ("step 1", "step 1 and step 2"), plural lists
+    ("steps 1 and 2", "steps 1, 2, and 3"), and ranges ("steps 1
+    through 5", "steps 1 to 5", "steps 1-5", "step 1 through 5").
+    The budget counter originally recognized only the singular form,
+    so a compile step phrased as a plural range counted no prior
+    steps at all and kept the flat base. A range counts every step
+    in it, a list counts each member: a referenced prior step is
+    read once however it was named.
+    """
+    import re as _re
+    refs = {int(m) for m in _re.findall(r"\bstep\s+(\d+)", text,
+                                        flags=_re.IGNORECASE)}
+    segment = _re.compile(
+        r"\bsteps?\s+(\d+(?:(?:\s*(?:,|and|through|to|[-–—])\s*)+\d+)+)",
+        _re.IGNORECASE)
+    token = _re.compile(r"\d+|through|to|and|,|[-–—]", _re.IGNORECASE)
+    for m in segment.finditer(text):
+        prev, connector = None, None
+        for tok in token.findall(m.group(1)):
+            if tok.isdigit():
+                n = int(tok)
+                if prev is not None and connector in (
+                        "through", "to", "-", "–", "—"):
+                    lo, hi = min(prev, n), max(prev, n)
+                    # A plan has few steps; a span far beyond that is
+                    # prose, not a range. Count its ends only.
+                    refs.update(range(lo, hi + 1) if hi - lo <= 64
+                                else (prev, n))
+                else:
+                    refs.add(n)
+                    if prev is not None:
+                        refs.add(prev)
+                prev, connector = n, None
+            else:
+                connector = tok.lower()
+        if prev is not None:
+            refs.add(prev)
+    return refs
+
+
 def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
     """Effective turn budget for one plan step, from its planned work."""
     import re as _re
@@ -317,8 +361,7 @@ def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
                 if t.strip() and not any(c.isspace() for c in t)}
     ops = len(operands)
     by_id = {s.id: s for s in steps}
-    for ref in {int(m) for m in _re.findall(r"step\s+(\d+)", text,
-                                            flags=_re.IGNORECASE)}:
+    for ref in _step_refs(text):
         prior = by_id.get(ref)
         if prior is not None and prior.id < step.id:
             ops += 1 + len(prior.source_items or [])

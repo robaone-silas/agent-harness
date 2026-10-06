@@ -69,6 +69,17 @@ Checks:
                      result, so nobody can tell whether the deliverable
                      is a file to open or words in an answer (field,
                      issue #6: Tomas's plan named no deliverable at all).
+  attested_compile   (WARN): a step writes a deliverable out of what
+                     earlier read steps gathered, and every Then clause
+                     guarding that deliverable is on trust, so nothing
+                     checks that the compiled file keeps what the
+                     earlier steps gathered (field, issue #37: Marcus's
+                     work list dropped every customer and status the
+                     task required while the run reported done; the
+                     existence floor passed because the file exists,
+                     and covers/indexes cannot express per-record
+                     field preservation). The warning makes the trust
+                     visible at approval; it never blocks.
 """
 from __future__ import annotations
 
@@ -186,6 +197,14 @@ _LIST_TYPE_TASK = re.compile(
     re.IGNORECASE,
 )
 _STEP_REF = re.compile(r"\bstep\s+(\d+)\b", re.IGNORECASE)
+# A step that reads source material (as opposed to listing it or
+# writing): the gather half of a read-then-compile plan.
+_READ_VERB = re.compile(r"\bread\w*\b", re.IGNORECASE)
+# Verifiers that machine-check a file's content (as opposed to its
+# mere existence): a deliverable guarded by one of these does not
+# rest entirely on trust.
+_CONTENT_CHECKS = {"contains", "contains_exactly", "has_lines",
+                   "covers", "indexes"}
 
 
 @dataclass
@@ -369,6 +388,66 @@ def _indexes_push_finding(step, covers_sources: dict, task: str):
             f"can be omitted and the step cannot spend its turns "
             f"reading.")
     return None
+
+
+def _gathers_sources(step) -> bool:
+    """A step that reads source material into the run: a read verb
+    over named files, or a generic listing of the workspace."""
+    when = step.instruction or ""
+    return bool((_READ_VERB.search(when) and _mentions(when))
+                or _GENERIC_LISTING.search(when))
+
+
+def _attested_compile_warnings(steps: list) -> list[LintFinding]:
+    """The read-then-compile trust warning (issue #37).
+
+    Fires on a step that writes a deliverable out of what earlier
+    read steps gathered when every Then clause guarding that
+    deliverable is attested: existence is floored by the runtime
+    checks, but nothing anywhere verifies the compiled content
+    preserves what the earlier steps read, and a compilation can
+    drop fields (every customer, every status) while the run
+    reports done. A deliverable carrying any content-bearing
+    machine check (contains, has_lines, covers, indexes) anywhere
+    in the plan does not rest entirely on trust and never warns.
+    Advisory only, like every warning: it makes the trust visible
+    at approval, it does not block the plan."""
+    checked: set[str] = set()
+    for s in steps:
+        for t in (s.done_when or "").split("\n"):
+            parsed = _verify.parse_then(t.strip())
+            if parsed and parsed[0] in _CONTENT_CHECKS and parsed[1]:
+                checked.add(parsed[1])
+    findings: list[LintFinding] = []
+    gathered = False
+    for s in steps:
+        when = s.instruction or ""
+        if gathered and _PRODUCE_VERB.search(when):
+            deliverables = {p for p in _mentions(s.done_when or "")
+                            if p not in checked}
+            if not deliverables:
+                deliverables = {p for p in _mentions(when)
+                                if p not in checked}
+            thens = [t.strip() for t in (s.done_when or "").split("\n")
+                     if t.strip()]
+            if deliverables and thens and all(
+                    _verify.parse_then(t) is None for t in thens):
+                target = sorted(deliverables)[0]
+                findings.append(LintFinding(
+                    s.id, "warn", "attested_compile",
+                    f"Step {s.id}: this step compiles \"{target}\" "
+                    f"from what earlier steps read, but every Then "
+                    f"clause guarding it is on trust, so nothing "
+                    f"checks that the compiled file keeps what those "
+                    f"steps gathered (the details and fields in the "
+                    f"source records). The completeness of "
+                    f"\"{target}\" rests entirely on the model's "
+                    f"word; approve knowing that, or ask for a "
+                    f"machine-checkable clause where the content is "
+                    f"known ahead of time."))
+        if _gathers_sources(s):
+            gathered = True
+    return findings
 
 
 def _workspace_file_set(workspace_files) -> set[str] | None:
@@ -557,6 +636,7 @@ def lint_plan(task: str, steps: list,
     drift = _intent_drift(task, steps)
     if drift is not None:
         findings.append(drift)
+    findings.extend(_attested_compile_warnings(steps))
     findings.extend(_workspace_warnings(
         task, steps, workspace_set, generic_listing, covers_any,
         output_files))

@@ -2,7 +2,7 @@
 """Tests for comprehensive plan-shape exemplars (issue #5, variant shape).
 
 Field failure, 2026-10-04 closing replay: the planner split Priya's index
-into seven per-file steps with no covers check anywhere. The completeness
+into seven per-file steps with no completeness check anywhere. The completeness
 dodge from issue #5 survived by changing shape: PR #10's lint rule sees
 per-item clauses concentrated in one step, not spread across steps. The
 prompt's example shelf taught only three shapes, two of them the same
@@ -11,7 +11,7 @@ the model improvised the split and the completeness check was split away
 with the work. Ansel's call: fill the knowledge gap with more
 comprehensive examples of plan shapes. These tests pin the expanded
 shelf: every exemplar parses as a real plan, a per-item shape whose
-final step still carries covers against the listing step, a
+final step still carries indexes against the listing step, a
 read-and-compute shape, and an inventory shape that turns a vague ask
 into a named durable deliverable.
 
@@ -66,23 +66,23 @@ def t_every_exemplar_parses():
               len(steps) >= 2, str(len(steps)))
 
 
-def t_per_item_shape_keeps_covers_on_the_final_step():
+def t_per_item_shape_keeps_indexes_on_the_final_step():
     plans = example_plans()
     found = None
     for task_line, steps in plans:
         if len(steps) >= 4 and any(
-                "covers the files from step 1" in s.done_when
+                "indexes the files from step 1" in s.done_when
                 for s in steps[-1:]):
             found = (task_line, steps)
             break
-    check("a per-item exemplar exists (4+ steps, covers at the end)",
+    check("a per-item exemplar exists (4+ steps, indexes at the end)",
           found is not None)
     task_line, steps = found
     middle = steps[1:-1]
     check("per-item middle steps gather without writing the deliverable",
-          all("covers" not in s.done_when for s in middle))
-    check("the final step is the one carrying covers",
-          "covers the files from step 1" in steps[-1].done_when,
+          all("indexes" not in s.done_when for s in middle))
+    check("the final step is the one carrying indexes",
+          "indexes the files from step 1" in steps[-1].done_when,
           steps[-1].done_when)
 
 
@@ -123,7 +123,7 @@ def t_lesson_note_present_in_prompt():
 
 def main():
     t_every_exemplar_parses()
-    t_per_item_shape_keeps_covers_on_the_final_step()
+    t_per_item_shape_keeps_indexes_on_the_final_step()
     t_read_and_compute_shape_present()
     t_inventory_shape_names_a_durable_deliverable()
     t_lesson_note_present_in_prompt()

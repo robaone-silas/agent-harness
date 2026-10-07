@@ -29,7 +29,7 @@ HEALTHY_PLAN = """Feature: File Audit Index
   Scenario: Step 2 - Read files and write the index
     Intent: create audit-index.md listing every file with a one-line description
     When I read every file from step 1 and write audit-index.md
-    Then "audit-index.md" covers the files from step 1
+    Then "audit-index.md" indexes the files from step 1
 """
 
 TOTALS_PLAN = """Feature: Contracts

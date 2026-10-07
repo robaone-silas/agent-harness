@@ -157,7 +157,14 @@ advancing — zero model calls on the happy path:
 
 - A registry of verifiers (`harness/verify.py`) matches `Then` phrasings:
   `exists`, `not_exists`, `contains`, `contains_exactly`, `has_lines`,
-  and `covers` (v0.8.1, below).
+  `covers` (v0.8.1), `indexes` (v0.8.2), and `preserves`: a clause like
+  `"work_list.txt" preserves customer, item, and status from step 1`
+  names the fields each source record must contribute, and the harness
+  harvests those fields' values from the source steps' stored records
+  and checks every value survived into the deliverable. Its negative
+  counterpart is `excludes`: `"summary.txt" excludes prices from
+  step 1` (or `excludes the contents of "internal-notes.txt"`) checks
+  that none of the named values appear in the deliverable.
   Adding a verifier is a `@verifier(name, pattern)` decorator + a check
   function — the engine never changes.
 - A failed `Then` triggers one bounded step retry with the verifier's

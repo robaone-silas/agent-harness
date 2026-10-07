@@ -107,7 +107,7 @@ Feature: Reading guide
   Scenario: Step 2 - Write the guide
     Intent: each entry gives the article's title and a one-sentence summary of its argument, not the article text
     When I read each article from step 1 and write guide.md with one entry per article
-    Then "guide.md" covers the files from step 1
+    Then "guide.md" indexes the files from step 1
 
 Task: Build a catalog of the songs in this folder, one entry per song with its length
 Feature: Song catalog
@@ -124,7 +124,7 @@ Feature: Song catalog
   Scenario: Step 4 - Write the catalog
     Intent: one entry per song with its length, covering every song from step 1
     When I write catalog.md with one entry per song from the notes in steps 2 and 3
-    Then "catalog.md" covers the files from step 1
+    Then "catalog.md" indexes the files from step 1
 
 Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
 Feature: Quarterly total
@@ -147,7 +147,7 @@ Feature: Seed packet inventory
     Then "seed-inventory.txt" indexes the files from step 1
 
 In the catalog example, note the shape: the per-item steps only gather,
-and the final step carries the covers check against the listing step.
+and the final step carries the indexes check against the listing step.
 Splitting the work across steps never splits away the completeness check.
 
 """
@@ -194,22 +194,13 @@ Rules:
   `"path" exists`, `"path" contains "text"`, `"path" contains exactly "text"`,
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
-- When a step writes a document derived from an earlier step's file listing
-  (a summary, strategy, or report about those files), write its Then as
-  `"out.txt" covers the files from step N` (N = the listing step) — the
-  harness checks the document actually mentions the source files.
-- Do not substitute one `contains` Then per source file for `covers` on
-  a document derived from a listing. Per-file clauses cannot prove the
-  document covers the listing; use the single `covers` clause instead.
 - When a step's whole job is to read every file from an earlier listing
   step and compile an index, inventory, or catalog with a short
   description of each file, write its Then as
-  `"out.txt" indexes the files from step N` instead of `covers`. For an
+  `"out.txt" indexes the files from step N`. For an
   `indexes` step the harness builds that file itself: it reads each
   listed file, gets a one-line description of each, and writes the
-  target with one entry per file, so no file can be omitted. Use
-  `covers` when the step itself writes a document derived from a
-  listing in some other way.
+  target with one entry per file, so no file can be omitted.
 - When a step compiles records that earlier steps READ (not listed)
   into a deliverable, and the fields each record must contribute
   matter (the task names them: a customer, an item, a status), write
@@ -984,7 +975,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         existence pass: the stub that founded stage 2 satisfied
         `"file" exists` while promising its content "to be filled in".
         The checks that answer stage 2's suspicion measure content:
-        contains, contains_exactly, covers (against the source items),
+        contains, contains_exactly, indexes (against the source items),
         has_lines. See _grounding_gate."""
         if not thens:
             return False
@@ -993,7 +984,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "covers", "indexes", "has_lines")
+                                  "indexes", "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)

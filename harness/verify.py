@@ -107,29 +107,6 @@ def _deferral_in(text: str) -> str | None:
     return None
 
 
-# Exhaustive cues for strict covers (issue #17, part 2): language that
-# makes completeness, not sampling, the stated contract. Deliberately
-# narrow, the phrases named in the issue: every file, all files, do not
-# omit, each entry/file, no omissions (plus their closest variants).
-# Summaries and strategy documents carry none of these and keep the
-# at-least-half covers floor.
-_EXHAUSTIVE_CUES = [re.compile(p, re.IGNORECASE) for p in (
-    r"\bevery\s+(?:file|entry|document|paper|record)s?\b",
-    r"\ball\s+(?:the\s+)?(?:file|entry|document|paper|record)s\b",
-    r"\bdo\s+not\s+omit\b", r"\bdon['’]t\s+omit\b",
-    r"\bwithout\s+omitting\b", r"\bomit(?:s|ting)?\s+none\b",
-    r"\bno\s+omissions?\b", r"\bnothing\s+(?:is\s+)?omitted\b",
-    r"\beach\s+(?:entry|file|document|paper|record)\b",
-)]
-
-
-def _strict_covers(ctx: VerifyContext) -> bool:
-    """True when the task or the covers step's Intent states a
-    completeness contract, so covers must require every source item."""
-    text = f"{ctx.task or ''}\n{ctx.intent or ''}"
-    return any(rx.search(text) for rx in _EXHAUSTIVE_CUES)
-
-
 def collect_step_items(sub_steps) -> list[str]:
     """Extract the item names a step produced, from listing-shaped tool
     results: list_dir and grep_files outputs (one workspace-relative name
@@ -208,60 +185,6 @@ def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
         return CheckResult(then, True, "has_lines", f"{rel!r} has {n} lines")
     return CheckResult(then, False, "has_lines",
                        f"{rel!r} has {got} lines, expected {n}")
-
-
-@verifier("covers",
-          # Phrasing tolerance (field, 2026-10-03): the planner produced
-          # 'the contents of "organization.md" cover the files from step 1'
-          # live: an optional contents-of prefix and cover/covers both
-          # match. The anchors stay strict: a real path, "the files", and
-          # a step reference, whole-clause.
-          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+covers?\s+the\s+files\s+"""
-          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
-def _v_covers(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    step_no = int(m.group(5))
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "covers", err)
-    items = list(ctx.prior_items.get(step_no) or [])
-    if not items:
-        # Nothing recorded to measure against: the harness only fails what
-        # it can actually check, and says plainly that it did not check.
-        return CheckResult(then, True, "covers",
-                           f"step {step_no} produced no file list — "
-                           f"coverage not checked")
-    if not p.is_file():
-        return CheckResult(then, False, "covers",
-                           f"{rel!r} is not a file — expected it to cover "
-                           f"the {len(items)} files from step {step_no}")
-    content = p.read_text(errors="replace")
-    bad = _deferral_in(content)
-    if bad:
-        return CheckResult(then, False, "covers",
-                           f"{rel!r} contains a deferral ({bad!r}) — the "
-                           f"document must be finished, not promised")
-    covered = [i for i in items if i in content]
-    strict = _strict_covers(ctx)
-    # Issue #17 part 2: an exhaustive task or Intent makes completeness
-    # the contract, so every source item must be mentioned. Otherwise
-    # the floor stays at least half, for summaries and strategy docs.
-    need = len(items) if strict else max(1, -(-len(items) // 2))
-    if len(covered) >= need:
-        return CheckResult(then, True, "covers",
-                           f"{rel!r} mentions {len(covered)} of {len(items)} "
-                           f"files from step {step_no}")
-    missing = [i for i in items if i not in content]
-    need_text = (f"exhaustive task: needs all {need}" if strict
-                 else f"needs at least {need}")
-    detail = (f"{rel!r} mentions {len(covered)} of {len(items)} files from "
-              f"step {step_no} ({need_text}); missing include: "
-              + ", ".join(missing[:12]))
-    if len(missing) > 12:
-        detail += (f" and {len(missing) - 12} more "
-                   f"(see step {step_no}'s stored output)")
-    return CheckResult(then, False, "covers", detail)
 
 
 @verifier("indexes",

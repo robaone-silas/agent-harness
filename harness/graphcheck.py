@@ -71,6 +71,12 @@ _INDEXES_SOURCE = re.compile(
     r"indexes\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
+# The source step named by an accounts_for clause: same listing
+# consumption, names only.
+_ACCOUNTS_SOURCE = re.compile(
+    r"accounts?\s+for\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
+    re.IGNORECASE,
+)
 # A step produces a file list when its When lists or gathers files.
 # Wider than planlint's placement heuristic: gathering or scanning
 # the files produces the same field a covers clause consumes.
@@ -218,9 +224,11 @@ def _analyze(task: str, steps: list, workspace_files=None):
 
         for t in thens:
             parsed = _verify.parse_then(t)
-            if parsed and parsed[0] in ("covers", "indexes"):
+            if parsed and parsed[0] in ("covers", "indexes",
+                                        "accounts_for"):
                 src = _COVERS_SOURCE.search(t) \
-                    or _INDEXES_SOURCE.search(t)
+                    or _INDEXES_SOURCE.search(t) \
+                    or _ACCOUNTS_SOURCE.search(t)
                 if src:
                     n = int(src.group(1))
                     add("listing", str(n), f"files from step {n}")

@@ -351,6 +351,54 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").casefold()
 
 
+@verifier("accounts_for",
+          # The listing-only completeness contract (Daniel Okafor's
+          # shape): the step writes from a listing's names alone, the
+          # contents unread (often unreadable by the task's own rule).
+          # Strict, unlike covers: when names are the only material,
+          # there is no legitimate sampling, so every listed file
+          # must appear. Phrasing tolerance mirrors covers (optional
+          # contents-of prefix).
+          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+files\s+"""
+          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
+def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
+    rel = _pick(*m.groups()[0:4])
+    step_no = int(m.group(5))
+    then = m.string.strip()
+    p, err = _resolve(ctx, rel)
+    if err:
+        return CheckResult(then, False, "accounts_for", err)
+    items = list(ctx.prior_items.get(step_no) or [])
+    if not items:
+        return CheckResult(then, True, "accounts_for",
+                           f"step {step_no} produced no file list — "
+                           f"accounting not checked")
+    if not p.is_file():
+        return CheckResult(then, False, "accounts_for",
+                           f"{rel!r} is not a file — expected it to "
+                           f"account for the {len(items)} files from "
+                           f"step {step_no}")
+    content = p.read_text(errors="replace")
+    bad = _deferral_in(content)
+    if bad:
+        return CheckResult(then, False, "accounts_for",
+                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"the document must be finished, not promised")
+    missing = [i for i in items if i not in content]
+    if not missing:
+        return CheckResult(then, True, "accounts_for",
+                           f"{rel!r} accounts for all {len(items)} "
+                           f"files from step {step_no}")
+    detail = (f"{rel!r} accounts for {len(items) - len(missing)} of "
+              f"{len(items)} files from step {step_no}; every listed "
+              f"file must be accounted for; missing include: "
+              + ", ".join(missing[:12]))
+    if len(missing) > 12:
+        detail += (f" and {len(missing) - 12} more "
+                   f"(see step {step_no}'s stored output)")
+    return CheckResult(then, False, "accounts_for", detail)
+
+
 @verifier("preserves",
           rf"""^{_FILE}{_QPATH}\s+preserves?\s+(.+?)\s+from\s+(.+?)\s*[.!]?\s*$""")
 def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:

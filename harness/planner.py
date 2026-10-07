@@ -194,6 +194,12 @@ Rules:
   `"path" exists`, `"path" contains "text"`, `"path" contains exactly "text"`,
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
+- When a step writes about a listing from the filenames ALONE, without
+  reading the files' contents (a strategy, triage, or sorting plan,
+  often because the task forbids reading contents), write its Then as
+  `"out.txt" accounts for the files from step N` (N = the listing
+  step). The check is strict: every filename from the listing must
+  appear in the document, so no file can be silently skipped.
 - When a step's whole job is to read every file from an earlier listing
   step and compile an index, inventory, or catalog with a short
   description of each file, write its Then as
@@ -984,7 +990,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "indexes", "has_lines")
+                                  "indexes", "accounts_for", "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)

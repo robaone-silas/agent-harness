@@ -136,7 +136,7 @@ _READ_VERB = re.compile(r"\bread\w*\b", re.IGNORECASE)
 # mere existence): a deliverable guarded by one of these does not
 # rest entirely on trust.
 _CONTENT_CHECKS = {"contains", "contains_exactly", "has_lines",
-                   "indexes"}
+                   "indexes", "accounts_for"}
 
 
 @dataclass
@@ -420,6 +420,12 @@ def lint_plan(task: str, steps: list,
                 # completeness form (the harness builds the target
                 # itself, one entry per source file): it accounts
                 # for the listing.
+                indexes_any = True
+            if _name == "accounts_for" and path:
+                # The accounts_for clause is the strict listing-only
+                # completeness form: it accounts for the listing in
+                # the same bookkeeping as indexes (its step writes
+                # the target itself, from names alone).
                 indexes_any = True
             if path:
                 # A file a Then checks is a named deliverable target,

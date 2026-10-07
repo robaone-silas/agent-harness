@@ -204,7 +204,7 @@ _READ_VERB = re.compile(r"\bread\w*\b", re.IGNORECASE)
 # mere existence): a deliverable guarded by one of these does not
 # rest entirely on trust.
 _CONTENT_CHECKS = {"contains", "contains_exactly", "has_lines",
-                   "covers", "indexes"}
+                   "covers", "indexes", "accounts_for"}
 
 
 @dataclass
@@ -599,6 +599,15 @@ def lint_plan(task: str, steps: list,
                 # exactly as covers does. The covers placement rule
                 # does not apply; there is no model-written step for
                 # the clause to sit on the wrong side of.
+                covers_targets.add(path)
+                covers_any = True
+            if _name == "accounts_for" and path:
+                # The accounts_for clause is the strict listing-only
+                # completeness form: it satisfies the per-item rule
+                # and accounts for the listing exactly as covers
+                # does, and the covers placement and indexes-push
+                # rules do not apply (its step writes the target
+                # itself, from names alone).
                 covers_targets.add(path)
                 covers_any = True
             if path:

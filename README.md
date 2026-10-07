@@ -164,7 +164,11 @@ advancing — zero model calls on the happy path:
   and checks every value survived into the deliverable. Its negative
   counterpart is `excludes`: `"summary.txt" excludes prices from
   step 1` (or `excludes the contents of "internal-notes.txt"`) checks
-  that none of the named values appear in the deliverable.
+  that none of the named values appear in the deliverable. And
+  `accounts_for` is the strict listing-only check: every filename
+  from a listing step must appear in the deliverable, for documents
+  written from names alone, where `covers`' at-least-half floor
+  would let files be skipped silently.
   Adding a verifier is a `@verifier(name, pattern)` decorator + a check
   function — the engine never changes.
 - A failed `Then` triggers one bounded step retry with the verifier's

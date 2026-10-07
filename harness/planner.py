@@ -198,6 +198,12 @@ Rules:
   (a summary, strategy, or report about those files), write its Then as
   `"out.txt" covers the files from step N` (N = the listing step) — the
   harness checks the document actually mentions the source files.
+- When a step writes about a listing from the filenames ALONE, without
+  reading the files' contents (a strategy, triage, or sorting plan,
+  often because the task forbids reading contents), write its Then as
+  `"out.txt" accounts for the files from step N` instead. The check
+  is strict: every filename from the listing must appear in the
+  document, so no file can be silently skipped.
 - Do not substitute one `contains` Then per source file for `covers` on
   a document derived from a listing. Per-file clauses cannot prove the
   document covers the listing; use the single `covers` clause instead.
@@ -993,7 +999,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "covers", "indexes", "has_lines")
+                                  "covers", "indexes", "accounts_for",
+                                  "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)

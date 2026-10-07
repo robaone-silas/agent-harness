@@ -57,6 +57,13 @@ from . import verify as _verify
 from .planlint import LintFinding
 
 _STEP_REF = re.compile(r"\bstep\s+(\d+)\b", re.IGNORECASE)
+# The source step named by a covers clause (kept local to graphcheck:
+# the graph still understands the clause shape when one appears in a
+# saved plan, even though the verb is no longer offered).
+_COVERS_SOURCE = re.compile(
+    r"covers?\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
+    re.IGNORECASE,
+)
 # The source step named by an indexes clause (graphcheck's listing
 # edge treats indexes exactly like covers: both consume the listing
 # field a listing step produces).
@@ -219,7 +226,7 @@ def _analyze(task: str, steps: list, workspace_files=None):
             parsed = _verify.parse_then(t)
             if parsed and parsed[0] in ("covers", "indexes",
                                         "accounts_for"):
-                src = _planlint._COVERS_SOURCE.search(t) \
+                src = _COVERS_SOURCE.search(t) \
                     or _INDEXES_SOURCE.search(t) \
                     or _ACCOUNTS_SOURCE.search(t)
                 if src:

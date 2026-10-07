@@ -25,42 +25,12 @@ Checks:
                      Intent, When, or Then — decomposition may have
                      silently traded the task's intent for mechanics
                      (field: "a one-line description" became "the content").
-  per_item_instead_of_covers (ERROR): a listing step followed by a step
-                     carrying at least two unmatched per-item containment
-                     Then clauses against the same target and no covers
-                     clause for that target (field, issue #5: Priya's
-                     `"audit-index.md" contains an entry for "<file>"`
-                     times six). Completeness expressed that way matches
-                     no verifier and rests entirely on trust; the covers
-                     clause is the machine-checkable form.
-  covers_on_read_only_step (ERROR): a covers clause sits on a step whose
-                     When only reads or gathers (no write, create, or run
-                     verb producing the covers target) while a later step
-                     writes that same target (field, issue #17 part 3:
-                     Priya's final-replay plan put covers on the read
-                     step and a prose Then on the write step). The check
-                     then runs before the deliverable exists in its
-                     final form; move the clause to the writing step.
-  covers_instead_of_indexes (ERROR): a covers clause sits on an
-                     entry-per-file compilation drawn directly on the
-                     listing step (describe-each or list-type task
-                     language; the When references only the source
-                     step and produces the target). That is the shape
-                     the harness indexing primitive exists for, so the
-                     retry feedback replaces covers with `indexes`:
-                     the harness then builds the target itself, one
-                     entry per file. Never fires when the task forbids
-                     reading file contents (a strategy from filenames
-                     only cannot be indexed without violating the
-                     task), nor on a final step assembling earlier
-                     gather steps' work (the catalog shape), whose
-                     covers clause is the right form.
   unaccounted_file   (WARN, workspace-aware): under narrow exhaustive
                      cues (a list, inventory, index, or catalogue task,
                      or all/every/each of the files), a workspace root
                      file mentioned nowhere in the task or plan, in a
                      plan that neither generically lists the workspace
-                     nor uses a covers clause (field, issue #6: Tomas's
+                     nor uses an indexes clause (field, issue #6: Tomas's
                      water-heater-manual.txt, named nowhere and silently
                      dropped). Needs the workspace root file set; lint
                      without it stays workspace-blind for this check.
@@ -77,7 +47,7 @@ Checks:
                      work list dropped every customer and status the
                      task required while the run reported done; the
                      existence floor passed because the file exists,
-                     and covers/indexes cannot express per-record
+                     and indexes cannot express per-record
                      field preservation). The warning makes the trust
                      visible at approval; it never blocks.
 """
@@ -96,16 +66,6 @@ _BARE_PATH = re.compile(r"(?<![\w./-])([\w-]+(?:[./][\w.-]+)+)(?![\w.-])")
 _CHECKY = re.compile(
     r"""contains?\s+(exactly\s+)?["'`]|\bexists?\s*[.!]*$|does\s+not\s+exist|"""
     r"""has\s+\d+\s+lines?|covers?\s+the\s+files""",
-    re.IGNORECASE,
-)
-# A per-item containment clause: a quoted target, "contains", then some
-# bridge text and a quoted item (`"index.md" contains an entry for
-# "a.txt"`). Group 1 is the target, group 2 the item. On its own this is
-# just an unmatched clause; two or more against one target after a
-# listing step are the issue #5 near miss for a covers clause.
-_PER_ITEM_CONTAINS = re.compile(
-    r"""^\s*(?:the\s+file\s+)?["'`]([^"'`]+)["'`]\s+(?:should\s+)?"""
-    r"""contains?\b.*["'`]([^"'`]+)["'`]""",
     re.IGNORECASE,
 )
 # A step whose When lists files (the source set a later deliverable is
@@ -157,8 +117,8 @@ _WRITE_VERB = re.compile(
     r"draft\w*)\b",
     re.IGNORECASE,
 )
-# Verbs that produce the target a covers clause checks, for the covers
-# placement rule: the write family above plus run/execute/append forms
+# Verbs that produce a deliverable, for the attested-compile rule:
+# the write family above plus run/execute/append forms
 # (a step that runs a script to build its target produces it, even
 # without a literal write verb). "Prepare" and other gather verbs
 # deliberately do not count: preparing entries is not producing the
@@ -166,34 +126,6 @@ _WRITE_VERB = re.compile(
 _PRODUCE_VERB = re.compile(
     r"\b(?:writ\w*|creat\w*|sav\w*|produc\w*|compil\w*|generat\w*|"
     r"draft\w*|append\w*|runs?|running|execut\w*)\b",
-    re.IGNORECASE,
-)
-# The source step named by a covers clause ("covers the files from
-# step N"), captured so placement feedback can restate the clause.
-_COVERS_SOURCE = re.compile(
-    r"covers?\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
-    re.IGNORECASE,
-)
-# A task that forbids reading file contents. Indexing reads every
-# file by definition, so such a task must never be pushed toward the
-# indexes clause (Daniel Okafor's shape: a strategy from filenames).
-_NO_READ_TASK = re.compile(
-    r"do not read|don't read|without reading|based only on the "
-    r"(?:file ?)?names|filenames only|file names only|names only",
-    re.IGNORECASE,
-)
-# Entry-per-file language: the deliverable describes each source in
-# turn, which is the indexing primitive's shape.
-_ENTRY_LANGUAGE = re.compile(
-    r"descri\w*|one[- ]line|what each|each (?:file|entry|item|one)\b|"
-    r"per file",
-    re.IGNORECASE,
-)
-# List-type task language (index, inventory, catalog, list): the
-# deliverable is an enumeration of the sources.
-_LIST_TYPE_TASK = re.compile(
-    r"\b(?:index|indexes|inventory|inventories|catalog|catalogue|"
-    r"list|listing)\b",
     re.IGNORECASE,
 )
 _STEP_REF = re.compile(r"\bstep\s+(\d+)\b", re.IGNORECASE)
@@ -204,7 +136,7 @@ _READ_VERB = re.compile(r"\bread\w*\b", re.IGNORECASE)
 # mere existence): a deliverable guarded by one of these does not
 # rest entirely on trust.
 _CONTENT_CHECKS = {"contains", "contains_exactly", "has_lines",
-                   "covers", "indexes", "accounts_for"}
+                   "indexes", "accounts_for"}
 
 
 @dataclass
@@ -295,101 +227,6 @@ def _intent_drift(task: str, steps: list) -> LintFinding | None:
         f"have been lost in decomposition.")
 
 
-def _per_item_covers_finding(step_id: int, listing_id: int,
-                             per_item: dict, covers_targets: set):
-    """The issue #5 aggregate near miss, as a retryable ERROR.
-
-    Fires when a deliverable step checks one target with at least two
-    unmatched per-item containment clauses and has no covers clause for
-    that target. The detail is the retry feedback, so it names the exact
-    replacement clause the planner should write."""
-    for target, count in per_item.items():
-        if count >= 2 and target not in covers_targets:
-            return LintFinding(
-                step_id, "error", "per_item_instead_of_covers",
-                f"Step {step_id}: {count} Then clauses check "
-                f"\"{target}\" one file at a time, but none of them "
-                f"matches a verifier, so completeness would be taken on "
-                f"trust. Replace those per-item clauses with one clause: "
-                f"\"{target}\" covers the files from step {listing_id}.")
-    return None
-
-
-def _covers_placement_finding(step, covers_sources: dict,
-                              later_steps: list):
-    """The issue #17 part 3 placement error, as a retryable ERROR.
-
-    Fires when a step carries a covers clause but its When only reads
-    or gathers (no verb producing the covers target), while a later
-    step writes that same target. The covers check would run before
-    the deliverable exists in its final form, and the writing step is
-    left with whatever prose Then it happens to carry. The detail is
-    the retry feedback, so it names the exact clause to move and the
-    step that should carry it."""
-    if _PRODUCE_VERB.search(step.instruction or ""):
-        return None
-    for target, (src_id, clause) in covers_sources.items():
-        writer = None
-        for later in later_steps:
-            if _PRODUCE_VERB.search(later.instruction or "") \
-                    and target in _mentions(later.instruction or ""):
-                writer = later
-                break
-        if writer is None:
-            continue
-        moved = (f"\"{target}\" covers the files from step {src_id}"
-                 if src_id is not None else clause)
-        return LintFinding(
-            step.id, "error", "covers_on_read_only_step",
-            f"Step {step.id}: the covers clause for \"{target}\" sits "
-            f"on a step whose When only reads or gathers, but step "
-            f"{writer.id} writes \"{target}\", so the completeness "
-            f"check would run before the deliverable exists in its "
-            f"final form. Move the covers clause to step {writer.id}: "
-            f"{moved}.")
-    return None
-
-
-def _indexes_push_finding(step, covers_sources: dict, task: str):
-    """The push toward the indexing primitive, as a retryable ERROR.
-
-    Fires when a step compiles its covers target entry by entry
-    directly from the listing step: entry-per-file or list-type
-    language in the task, the step's Intent, or its When; the When
-    references only the covers source step (a step drawing on
-    intermediate gather steps is an assembly, and covers is its
-    right form); and the When produces the target. The detail is
-    the retry feedback, so it names the exact replacement clause.
-    A task that forbids reading contents never fires: indexing
-    reads every file by definition."""
-    if _NO_READ_TASK.search(task or ""):
-        return None
-    language = " ".join([task or "", getattr(step, "intent", "") or "",
-                         step.instruction or ""])
-    if not (_ENTRY_LANGUAGE.search(language)
-            or _LIST_TYPE_TASK.search(task or "")):
-        return None
-    if not _PRODUCE_VERB.search(step.instruction or ""):
-        return None
-    refs = {int(m.group(1))
-            for m in _STEP_REF.finditer(step.instruction or "")}
-    for target, (src_id, _clause) in covers_sources.items():
-        if src_id is None or refs != {src_id}:
-            continue
-        return LintFinding(
-            step.id, "error", "covers_instead_of_indexes",
-            f"Step {step.id}: this step compiles \"{target}\" entry "
-            f"by entry from the files listed in step {src_id}, the "
-            f"list-and-compile shape the harness has a primitive "
-            f"for. Replace the covers clause with \"{target}\" "
-            f"indexes the files from step {src_id}: the harness "
-            f"then builds \"{target}\" itself, reading each listed "
-            f"file and writing one entry per file, so no source "
-            f"can be omitted and the step cannot spend its turns "
-            f"reading.")
-    return None
-
-
 def _gathers_sources(step) -> bool:
     """A step that reads source material into the run: a read verb
     over named files, or a generic listing of the workspace."""
@@ -408,7 +245,7 @@ def _attested_compile_warnings(steps: list) -> list[LintFinding]:
     preserves what the earlier steps read, and a compilation can
     drop fields (every customer, every status) while the run
     reports done. A deliverable carrying any content-bearing
-    machine check (contains, has_lines, covers, indexes) anywhere
+    machine check (contains, has_lines, indexes) anywhere
     in the plan does not rest entirely on trust and never warns.
     Advisory only, like every warning: it makes the trust visible
     at approval, it does not block the plan."""
@@ -495,7 +332,7 @@ def _plan_text(task: str, steps: list) -> str:
 
 
 def _workspace_warnings(task: str, steps: list, workspace_set,
-                        generic_listing: bool, covers_any: bool,
+                        generic_listing: bool, indexes_any: bool,
                         output_files: set) -> list[LintFinding]:
     """The two workspace-aware warnings (issue #6, repair step 5).
 
@@ -508,7 +345,7 @@ def _workspace_warnings(task: str, steps: list, workspace_set,
     findings: list[LintFinding] = []
     last_id = steps[-1].id
     if workspace_set and _EXHAUSTIVE_TASK.search(task or "") \
-            and not generic_listing and not covers_any:
+            and not generic_listing and not indexes_any:
         corpus = _plan_text(task, steps)
         for name in sorted(workspace_set):
             if name not in corpus:
@@ -516,7 +353,7 @@ def _workspace_warnings(task: str, steps: list, workspace_set,
                     last_id, "warn", "unaccounted_file",
                     f"Plan: the workspace file '{name}' is mentioned "
                     f"nowhere in the task or the plan, and the plan "
-                    f"neither lists the workspace nor uses a covers "
+                    f"neither lists the workspace nor uses an indexes "
                     f"clause. Under this task every root file is "
                     f"potentially in scope, so '{name}' is "
                     f"unaccounted for: include it, or exclude it "
@@ -548,7 +385,7 @@ def lint_plan(task: str, steps: list,
     whens: list[str] = [task or ""]
     listing_ids: list[int] = []  # earlier steps whose When lists files
     generic_listing = False  # a step generically lists the workspace
-    covers_any = False  # a step's Then uses a covers clause
+    indexes_any = False  # a step's Then uses an indexes clause
     output_files: set[str] = set()  # files the plan names as deliverables
     for idx, s in enumerate(steps):
         known |= _mentions(s.instruction)
@@ -568,16 +405,9 @@ def lint_plan(task: str, steps: list,
                 or _GENERIC_LISTING.search(s.done_when or ""):
             generic_listing = True
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
-        per_item: dict[str, int] = {}
-        covers_targets: set[str] = set()
-        covers_sources: dict[str, tuple] = {}
         for t in thens:
             parsed = _verify.parse_then(t)
             if parsed is None:
-                m = _PER_ITEM_CONTAINS.match(t)
-                if m:
-                    target = m.group(1).strip()
-                    per_item[target] = per_item.get(target, 0) + 1
                 if _CHECKY.search(t):
                     findings.append(LintFinding(
                         s.id, "warn", "unparseable_check",
@@ -585,34 +415,21 @@ def lint_plan(task: str, steps: list,
                         f"verifier — it will be taken on trust: {t[:80]}"))
                 continue
             _name, path, value = parsed
-            if _name == "covers" and path:
-                covers_targets.add(path)
-                covers_any = True
-                src = _COVERS_SOURCE.search(t)
-                covers_sources[path] = (
-                    int(src.group(1)) if src else None, t)
             if _name == "indexes" and path:
-                # The indexes clause is the other machine-checked
+                # The indexes clause is the machine-checked
                 # completeness form (the harness builds the target
-                # itself, one entry per source file): it satisfies
-                # the per-item rule and accounts for the listing,
-                # exactly as covers does. The covers placement rule
-                # does not apply; there is no model-written step for
-                # the clause to sit on the wrong side of.
-                covers_targets.add(path)
-                covers_any = True
+                # itself, one entry per source file): it accounts
+                # for the listing.
+                indexes_any = True
             if _name == "accounts_for" and path:
                 # The accounts_for clause is the strict listing-only
-                # completeness form: it satisfies the per-item rule
-                # and accounts for the listing exactly as covers
-                # does, and the covers placement and indexes-push
-                # rules do not apply (its step writes the target
-                # itself, from names alone).
-                covers_targets.add(path)
-                covers_any = True
+                # completeness form: it accounts for the listing in
+                # the same bookkeeping as indexes (its step writes
+                # the target itself, from names alone).
+                indexes_any = True
             if path:
                 # A file a Then checks is a named deliverable target,
-                # whatever the verifier: exists, contains, covers.
+                # whatever the verifier: exists, contains, indexes.
                 output_files.add(path)
             if path and path not in known:
                 findings.append(LintFinding(
@@ -627,19 +444,6 @@ def lint_plan(task: str, steps: list,
                         f"Step {s.id}: Then asserts exact value '{v[:60]}', "
                         f"which appears nowhere in the task or prior steps — "
                         f"computed or invented?"))
-        if listing_ids:
-            agg = _per_item_covers_finding(s.id, listing_ids[-1],
-                                           per_item, covers_targets)
-            if agg is not None:
-                findings.append(agg)
-        if covers_sources:
-            placement = _covers_placement_finding(
-                s, covers_sources, steps[idx + 1:])
-            if placement is not None:
-                findings.append(placement)
-            push = _indexes_push_finding(s, covers_sources, task)
-            if push is not None:
-                findings.append(push)
         if _LISTING.search(s.instruction or ""):
             listing_ids.append(s.id)
     drift = _intent_drift(task, steps)
@@ -647,6 +451,6 @@ def lint_plan(task: str, steps: list,
         findings.append(drift)
     findings.extend(_attested_compile_warnings(steps))
     findings.extend(_workspace_warnings(
-        task, steps, workspace_set, generic_listing, covers_any,
+        task, steps, workspace_set, generic_listing, indexes_any,
         output_files))
     return findings

@@ -6,7 +6,7 @@ data-flow graph, nodes with declared input and output fields, edges
 where one node's output feeds another's input, and checks the graph's
 structure. A node can only succeed when it can produce what the next
 node needs, so at plan time that means: every consumed field has a
-producer, step references resolve to earlier nodes, and a covers
+producer, step references resolve to earlier nodes, and a listing
 clause draws its file list from a node that actually produces one.
 
 The checker is plan-time and structural. It cannot catch a runtime
@@ -31,7 +31,7 @@ PRIYA_TASK = (
 )
 
 # The shape the closing replay approved: list, then one read-and-write
-# step carrying the covers clause.
+# step carrying the indexes clause.
 HEALTHY_PLAN = """Feature: File Audit Index
   Scenario: Step 1 - List all files
     Intent: know exactly which files the audit index must cover
@@ -40,7 +40,7 @@ HEALTHY_PLAN = """Feature: File Audit Index
   Scenario: Step 2 - Read files and write the index
     Intent: create audit-index.md listing every file with a one-line description
     When I read every file from step 1 and write audit-index.md
-    Then "audit-index.md" covers the files from step 1
+    Then "audit-index.md" indexes the files from step 1
 """
 
 FILE_HANDOFF_PLAN = """Feature: Totals
@@ -129,18 +129,18 @@ def t_unresolved_step_reference():
           f"{[(f.code, f.detail) for f in hits2]}")
 
 
-def t_covers_source_not_a_listing():
+def t_listing_clause_source_not_a_listing():
     steps = [PlanStep(id=1, instruction="I read values.csv carefully",
                       done_when='"values.csv" exists'),
              PlanStep(id=2, instruction="I write audit-index.md",
-                      done_when='"audit-index.md" covers the files from step 1')]
+                      done_when='"audit-index.md" indexes the files from step 1')]
     fs = graphcheck.check_plan(PRIYA_TASK, steps)
     hits = _by_code(fs, "covers_source_not_a_listing")
-    check("covers from a non-listing step fires once", len(hits) == 1,
+    check("indexes from a non-listing step fires once", len(hits) == 1,
           f"{[(f.code, f.detail) for f in fs]}")
-    check("covers source finding is an error", hits[0].level == "error",
+    check("listing source finding is an error", hits[0].level == "error",
           hits[0].level)
-    check("covers source finding is on step 2", hits[0].step_id == 2,
+    check("listing source finding is on step 2", hits[0].step_id == 2,
           str(hits[0].step_id))
 
 

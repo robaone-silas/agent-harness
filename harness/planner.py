@@ -387,6 +387,50 @@ def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
     return max(base, min(ceiling, ops + _BUDGET_SLACK))
 
 
+_PLAN_SHAPE_FEEDBACK = (
+    "A plan contains only Feature, Scenario, Intent, and Given/When/Then "
+    "lines. Notes and findings are background for writing steps, never "
+    "lines in the plan.\n"
+    "Shape:\n"
+    "  Feature: <name>\n"
+    "    Scenario: Step 1 - <goal>\n"
+    "      When I <action>\n"
+    "      Then <checkable result>"
+)
+
+
+def _squash(text: str) -> str:
+    return " ".join((text or "").split()).lower()
+
+
+def _parse_feedback(err: str, content: str, discovery: str = "") -> str:
+    """The full rejection message for a plan that fails Gherkin parse.
+
+    The parser's error names the symptom; the retry stands a better
+    chance when the message also teaches at the failure point: the
+    grammar in one sentence, a skeleton to copy, and, when the
+    offending line was pasted out of the discovery notes (Tomas's
+    2026-10-08 yard inventory: a findings bullet sitting where a
+    step belonged, and the same mistake on the retry), that
+    confusion named directly.
+    """
+    import re
+    parts = [f"That plan was rejected: {err}."]
+    m = re.search(r"line (\d+)", err or "")
+    if m and discovery:
+        lines = (content or "").splitlines()
+        n = int(m.group(1))
+        if 1 <= n <= len(lines):
+            offending = _squash(lines[n - 1])
+            if offending and offending in _squash(discovery):
+                parts.append(
+                    "That line came from the discovery notes; "
+                    "do not paste findings into the plan.")
+    parts.append(_PLAN_SHAPE_FEEDBACK)
+    parts.append("Return ONLY the corrected Gherkin, no other text.")
+    return "\n".join(parts)
+
+
 def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
                  discovery: str = ""
                  ) -> tuple[str | None, list[PlanStep] | str]:
@@ -410,7 +454,7 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
         content = (msg.get("content") or "").strip()
         plan, err = gherkin.parse_feature(content)
         if plan is None:
-            feedback = f"That plan was rejected: {err}."
+            feedback = _parse_feedback(err, content, discovery)
             last_problem = err
         else:
             steps = to_plan_steps(plan)
@@ -426,11 +470,12 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
             if not errors or attempt == 2:
                 return content, steps
             feedback = ("That plan has design flaws: "
-                        + "; ".join(f.detail for f in errors) + ".")
+                        + "; ".join(f.detail for f in errors)
+                        + ". Return ONLY the corrected Gherkin, "
+                        "no other text.")
             last_problem = "; ".join(f.detail for f in errors)
         messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content":
-                         feedback + " Return ONLY the corrected Gherkin, no other text."})
+        messages.append({"role": "user", "content": feedback})
     return None, last_problem
 
 
@@ -558,8 +603,7 @@ def request_discovery_plan(task: str, cfg: Config, chat_fn
         last_problem = err
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content":
-                         f"That plan was rejected: {err}. "
-                         "Return ONLY the corrected Gherkin, no other text."})
+                         _parse_feedback(err, content)})
     return None, last_problem
 
 

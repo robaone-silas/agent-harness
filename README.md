@@ -122,7 +122,11 @@ python3 run.py --run plan.feature
 1. **Propose** (`--plan`): the model is asked once for a Gherkin plan
    (2–6 scenarios). The harness parses and validates it — a missing
    `Then`, or an unresolvable `<placeholder>`, is rejected here with the
-   reason, never executed. One retry with the rejection explained.
+   reason, never executed. One retry with the rejection explained: a
+   parse rejection now also states the plan grammar in one sentence,
+   shows a minimal skeleton to copy, and, when the offending line was
+   pasted out of the discovery notes, names that directly, since a
+   bare "not a Gherkin step" left the model to repeat the mistake.
 2. **Approve** (human): read the `Then` lines first — they define what
    "done" means for each step, and that is what you are signing off on.
    Edit the `.feature` file freely; it re-validates on load.

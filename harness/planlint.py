@@ -583,6 +583,27 @@ def lint_plan(task: str, steps: list,
                         s.id, "warn", "unparseable_check",
                         f"Step {s.id}: Then reads like a check but matches no "
                         f"verifier — it will be taken on trust: {t[:80]}"))
+                subject = _verify.then_subject_file(t)
+                if subject:
+                    # The clause names a deliverable target even
+                    # though no verifier parses it: count it as one,
+                    # and give it the dangling check every parsed
+                    # target gets (issue #48: a prose contains Then
+                    # named urgent-gear.txt only in the Then, and
+                    # lint stayed silent while the same plan's
+                    # parsed preserves Then drew the ERROR).
+                    output_files.add(subject)
+                    if subject not in known \
+                            and not _verify.absence_intent(t):
+                        findings.append(LintFinding(
+                            s.id, "error", "dangling_file",
+                            f"Step {s.id}: Then refers to '{subject}', "
+                            f"which no step creates and the task "
+                            f"doesn't mention. The file is named only "
+                            f"in this Then; name it in the step's "
+                            f"When as the file the step writes, so "
+                            f"the executing step knows where to "
+                            f"write."))
                 continue
             _name, path, value = parsed
             if _name == "covers" and path:

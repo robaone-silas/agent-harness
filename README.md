@@ -209,7 +209,11 @@ Gherkin validation, before the plan reaches the user:
 
 - `dangling_file` (ERROR): a Then targets a file no step creates and
   the task doesn't mention — triggers one planner retry with the
-  finding as feedback, mirroring the Gherkin validation flow.
+  finding as feedback, mirroring the Gherkin validation flow. The
+  check covers prose Thens too: a deliverable named only in its Then
+  (issue #48) draws the same ERROR, with feedback to name the file
+  in the step's When, and at execution the step's prompt and a
+  refused write's feedback name that file as the step's output.
 - `value_from_nowhere` (WARN): a Then asserts an exact value appearing
   nowhere in the task or prior steps — computed or invented?
 - `unparseable_check` (WARN): a Then reads like a check but matches no

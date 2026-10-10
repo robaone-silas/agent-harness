@@ -229,6 +229,10 @@ Rules:
   its Then as `"out.txt" excludes prices from step N` or
   `"out.txt" excludes the contents of "internal-notes.txt"`. The
   harness checks that none of those values appear in the deliverable.
+- Name every file a step creates in that step's When, not only in its
+  Then. The step executes its When; a deliverable named only in the
+  Then may never be written, because the step was never told to
+  write it.
 - Each step runs under a turn budget that scales with the operations it
   implies: by default a base of 6 turns, plus one turn per file it must
   read beyond that, up to a maximum of 24. If a step would need more
@@ -949,6 +953,27 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     return gate
 
 
+def _then_named_outputs(step: PlanStep) -> list[str]:
+    """Files the step's Thens name as their subject that the step's
+    When never names (issue #48): the deliverable exists only in the
+    clause that checks the work, not in the instruction that does
+    it, so the executing step has no stated place to write. The
+    executor prompt and the blocked-write feedback both name these
+    files explicitly, so the gap is bridged even when a plan that
+    carries it reaches execution. Absence clauses name no output:
+    the file they name is meant to be gone, not written."""
+    from . import verify as _verify
+    out: list[str] = []
+    for t in (step.done_when or "").split("\n"):
+        t = t.strip()
+        if not t or _verify.absence_intent(t):
+            continue
+        f = _verify.then_subject_file(t)
+        if f and f not in (step.instruction or "") and f not in out:
+            out.append(f)
+    return out
+
+
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                      cfg: Config, chat_fn, jail, emit,
                      store=None, only_tools=None) -> bool:
@@ -1094,6 +1119,18 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             feedback = "; ".join(c.detail for c in vres.checks
                                   if not c.ok)
 
+    # Issue #48: files the step's Thens name that its When does not.
+    # The prompt presents them as the step's output file, and a
+    # refused write's feedback names them, so a plan that reaches
+    # execution with the gap still gives the step a way to recover.
+    outputs = _then_named_outputs(step)
+    refusal_hint = None
+    if outputs:
+        listed = ", ".join(f"'{o}'" for o in outputs)
+        refusal_hint = (f"HARNESS: this step's output file is "
+                        f"{listed} (named in the step's Then). Write "
+                        f"to that file instead.")
+
     for _ in range(1 + cfg.verify_retries):
         prompt = (f"Overall goal: {task}\n"
                   f"You are executing step {step.id} of {n_steps}. "
@@ -1106,6 +1143,11 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             prompt += f"Intent of this step: {step.intent}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
+        if outputs:
+            listed = ", ".join(f"'{o}'" for o in outputs)
+            prompt += (f"Output file for this step: {listed} (named "
+                       f"in this step's Then). Write this step's "
+                       f"result to that file.\n")
         if contract:
             prompt += contract
         if store is not None and step.output_path:
@@ -1127,7 +1169,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         try:
             r = loop.run(prompt, sub_cfg, chat_fn=chat_fn,
                          on_step=lambda s: emit("step_sub", step, s),
-                         done_gate=gate, only_tools=only_tools)
+                         done_gate=gate, only_tools=only_tools,
+                         refusal_hint=refusal_hint)
         except Exception as e:
             step.status = "failed"
             step.result = f"harness error: {e}"

@@ -750,6 +750,39 @@ def _named_file(then: str) -> str | None:
     return None
 
 
+_LEADING_QUOTED = re.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
+                             re.IGNORECASE)
+
+
+def absence_intent(clause: str) -> bool:
+    """True when the clause wants its named file NOT there, so a
+    missing file is the success state, never a gap. This is the
+    exemption the existence floor and the deliverable audit apply;
+    lint applies it too, so the layers agree on absence clauses."""
+    return bool(_ABSENCE_INTENT.search(clause or ""))
+
+
+def then_subject_file(clause: str) -> str | None:
+    """The file a Then clause is about: its subject.
+
+    A parsed clause's subject is its verifier's target. A prose
+    clause's subject is a quoted, path-shaped name in subject
+    position, at the clause's start (`"urgent-gear.txt" contains a
+    list of ...`); a file merely mentioned later in the clause (a
+    listing Then enumerating the files it found) is not the
+    subject, and neither is quoted prose. Pure phrasing; never
+    touches the workspace. Issue #48: lint and the executor both
+    keyed only on parsed clauses, so a deliverable named only in
+    a prose Then was invisible to both."""
+    clause = (clause or "").strip()
+    parsed = parse_then(clause)
+    if parsed is not None:
+        return parsed[1]
+    if not _LEADING_QUOTED.match(clause):
+        return None
+    return _named_file(clause)
+
+
 def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     """The attestation fallback, with the issue #22 existence floor.
 

@@ -148,6 +148,67 @@ def t_field_loss_fails_and_names_missing_values():
                   c.detail)
 
 
+def t_refs_in_single_plural_and_oxford_comma():
+    check("single plural reference parses",
+          verify._refs_in("steps 2") == [2],
+          str(verify._refs_in("steps 2")))
+    check("single plural reference parses inside a clause tail",
+          verify._refs_in("from steps 2") == [2],
+          str(verify._refs_in("from steps 2")))
+    check("Oxford comma list keeps its last member",
+          verify._refs_in("steps 1, 2, and 3") == [1, 2, 3],
+          str(verify._refs_in("steps 1, 2, and 3")))
+
+
+def t_refs_in_existing_forms_unchanged():
+    for text, want in (("step 2", [2]),
+                       ("steps 1 and 2", [1, 2]),
+                       ("steps 2 through 4", [2, 3, 4]),
+                       ("steps 1, 2, 3", [1, 2, 3])):
+        check(f"existing form still parses: {text}",
+              verify._refs_in(text) == want,
+              str(verify._refs_in(text)))
+
+
+def t_single_plural_step_reference_actually_checks():
+    step2 = ("# Step 2 record\n#### read_file {\"path\": \"extra.txt\"}\n"
+             "Result:\nCustomer: Dana Lee. Item: Shure microphone. "
+             "Status: checked and packed.\n")
+    clause = ('"work_list.txt" preserves customer, item, and status '
+              'from steps 2')
+    good = ("Work list\nCustomer: Dana Lee. Item: Shure microphone. "
+            "Status: checked and packed.\n")
+    bad = ("Work list\nCustomer: Dana Lee. Item: Shure microphone.\n")
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, good, clause, step2)
+        check("single plural reference passes a complete deliverable",
+              c.verifier == "preserves" and c.ok, c.detail)
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, bad, clause, step2)
+        check("single plural reference fails a deliverable that "
+              "drops a value from steps 2",
+              c.verifier == "preserves" and not c.ok
+              and "checked and packed" in c.detail, c.detail)
+
+
+def t_not_checked_detail_names_the_failed_side():
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, GOOD_LIST,
+                 '"work_list.txt" preserves customer and status '
+                 'from the earlier work')
+        check("fields but no references: detail names the references",
+              c.verifier == "preserves" and c.ok
+              and "no source steps" in c.detail
+              and "no fields" not in c.detail, c.detail)
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, GOOD_LIST,
+                 '"work_list.txt" preserves 123 from step 1')
+        check("references but no fields: detail names the fields",
+              c.verifier == "preserves" and c.ok
+              and "no fields" in c.detail
+              and "no source steps" not in c.detail, c.detail)
+
+
 def t_plural_and_range_refs_harvest_every_named_step():
     step2 = ("# Step 2 record\n#### read_file {\"path\": \"extra.txt\"}\n"
              "Result:\nCustomer: Dana Lee. Item: Shure microphone. "

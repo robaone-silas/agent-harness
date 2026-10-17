@@ -325,9 +325,12 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
 # A step-reference phrase inside prose: singular, plural lists, and
 # ranges. Same grammar as planner._step_refs; verify.py cannot import
 # planner (planner imports verify), so the segment parser is local,
-# like graphcheck's and planlint's own reference patterns.
+# like graphcheck's and planlint's own reference patterns. A plural
+# head may carry a single number ("steps 2"), and separators may
+# repeat between numbers, so an Oxford comma list ("steps 1, 2, and
+# 3") parses whole instead of dropping its last member.
 _PRES_SEG = re.compile(
-    r"\bsteps?\s+(\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)+)",
+    r"\bsteps?\s+(\d+(?:(?:\s*(?:,|and|through|to|[-–—])\s*)+\d+)*)",
     re.IGNORECASE)
 _PRES_TOKEN = re.compile(r"\d+|through|to|and|,|[-–—]", re.IGNORECASE)
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
@@ -490,9 +493,16 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
     refs = [r for r in _refs_in(m.group(6)) if r != ctx.step_id]
     then = m.string.strip()
     if not fields or not refs:
-        return CheckResult(then, True, "preserves",
-                           "the clause names no fields or no source "
-                           "steps — preservation not checked")
+        if not fields and not refs:
+            detail = ("the clause names no fields and no source "
+                      "steps: preservation not checked")
+        elif not fields:
+            detail = ("the clause names no fields: "
+                      "preservation not checked")
+        else:
+            detail = ("the clause names no source steps: "
+                      "preservation not checked")
+        return CheckResult(then, True, "preserves", detail)
     p, err = _resolve(ctx, rel)
     if err:
         return CheckResult(then, False, "preserves", err)

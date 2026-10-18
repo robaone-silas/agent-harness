@@ -340,17 +340,30 @@ def _refs_in(text: str) -> list[int]:
     refs = [int(n) for n in re.findall(r"\bstep\s+(\d+)", text or "",
                                        re.IGNORECASE)]
     for m in _PRES_SEG.finditer(text or ""):
-        toks = _PRES_TOKEN.findall(m.group(1))
-        nums = [t for t in toks if t.isdigit()]
-        seps = [t for t in toks if not t.isdigit()]
+        nums: list[int] = []
+        gaps: list[str] = []
+        pending: list[str] = []
+        for tok in _PRES_TOKEN.findall(m.group(1)):
+            if tok.isdigit():
+                if nums:
+                    # One connector per numeric gap: the last separator
+                    # spoken before the next number governs that gap,
+                    # so repeated separators (", and") cannot shift the
+                    # pairing between numbers and connectors. The token
+                    # walk in planner._step_refs pairs them the same way.
+                    gaps.append(pending[-1].strip().lower()
+                                if pending else "")
+                nums.append(int(tok))
+                pending = []
+            else:
+                pending.append(tok)
         for i, num in enumerate(nums):
-            if (i + 1 < len(nums) and i < len(seps)
-                    and seps[i].strip().lower() in _PRES_RANGE_SEPS):
-                a, b = int(num), int(nums[i + 1])
+            if (i + 1 < len(nums) and gaps[i] in _PRES_RANGE_SEPS):
+                a, b = num, nums[i + 1]
                 if 0 < abs(b - a) <= 64:
                     refs.extend(range(min(a, b), max(a, b) + 1))
                     continue
-            refs.append(int(num))
+            refs.append(num)
     seen: set[int] = set()
     out: list[int] = []
     for r in refs:

@@ -170,6 +170,23 @@ def t_refs_in_existing_forms_unchanged():
               str(verify._refs_in(text)))
 
 
+def t_refs_in_oxford_list_mixed_with_range():
+    check("Oxford list then range keeps the range whole",
+          verify._refs_in("steps 1, 2, and 4 through 6")
+          == [1, 2, 4, 5, 6],
+          str(verify._refs_in("steps 1, 2, and 4 through 6")))
+    check("list item after a range is not swept into it",
+          verify._refs_in("steps 1, 2, and 4 through 6 and 8")
+          == [1, 2, 4, 5, 6, 8],
+          str(verify._refs_in("steps 1, 2, and 4 through 6 and 8")))
+    check("range then Oxford list keeps both shapes",
+          verify._refs_in("steps 1 through 3, and 5") == [1, 2, 3, 5],
+          str(verify._refs_in("steps 1 through 3, and 5")))
+    check("dash range inside an Oxford list expands",
+          verify._refs_in("steps 1, 2, and 4-6") == [1, 2, 4, 5, 6],
+          str(verify._refs_in("steps 1, 2, and 4-6")))
+
+
 def t_single_plural_step_reference_actually_checks():
     step2 = ("# Step 2 record\n#### read_file {\"path\": \"extra.txt\"}\n"
              "Result:\nCustomer: Dana Lee. Item: Shure microphone. "

@@ -19,6 +19,7 @@ Run: python3 tests/test_preserves.py
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -185,6 +186,22 @@ def t_refs_in_oxford_list_mixed_with_range():
     check("dash range inside an Oxford list expands",
           verify._refs_in("steps 1, 2, and 4-6") == [1, 2, 4, 5, 6],
           str(verify._refs_in("steps 1, 2, and 4-6")))
+
+
+def t_refs_in_repetitive_tail_does_not_stall():
+    # A malformed clause tail with many separators and no number after
+    # them must fail fast. With whitespace on both sides of each
+    # separator in the segment pattern, adjacent repetitions split the
+    # same spaces between them and the parse backtracks exponentially
+    # (about 5 seconds for these strings on the unfixed pattern).
+    for tail in ("steps 2 " + "and " * 24 + "earlier work",
+                 "steps 2" + ", " * 24 + "end"):
+        start = time.perf_counter()
+        got = verify._refs_in(tail)
+        elapsed = time.perf_counter() - start
+        check(f"repetitive tail parses promptly: {tail[:16]!r}",
+              got == [2] and elapsed < 2.0,
+              f"{got} in {elapsed:.2f}s")
 
 
 def t_single_plural_step_reference_actually_checks():

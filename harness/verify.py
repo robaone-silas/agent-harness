@@ -328,9 +328,13 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
 # like graphcheck's and planlint's own reference patterns. A plural
 # head may carry a single number ("steps 2"), and separators may
 # repeat between numbers, so an Oxford comma list ("steps 1, 2, and
-# 3") parses whole instead of dropping its last member.
+# 3") parses whole instead of dropping its last member. The whitespace
+# before a separator run sits outside the repeated group: with a \s*
+# on both sides of each separator, adjacent repetitions can split the
+# same spaces between them and backtrack exponentially when the tail
+# never reaches a number.
 _PRES_SEG = re.compile(
-    r"\bsteps?\s+(\d+(?:(?:\s*(?:,|and|through|to|[-–—])\s*)+\d+)*)",
+    r"\bsteps?\s+(\d+(?:\s*(?:(?:,|and|through|to|[-–—])\s*)+\d+)*)",
     re.IGNORECASE)
 _PRES_TOKEN = re.compile(r"\d+|through|to|and|,|[-–—]", re.IGNORECASE)
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}

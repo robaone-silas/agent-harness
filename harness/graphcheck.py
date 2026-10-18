@@ -64,6 +64,17 @@ _COVERS_SOURCE = re.compile(
     r"covers?\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
+# A whole covers clause, anchored the way the retired verifier
+# anchored it: an optional contents-of prefix, a quoted target,
+# "the files", a step reference, and nothing else. parse_then no
+# longer knows this shape, so the graph recognizes it here to keep
+# a saved plan's listing edge and its source validation.
+_COVERS_CLAUSE = re.compile(
+    r"^\s*(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?"
+    r"\"([^\"]+)\"\s+covers?\s+the\s+files\s+"
+    r"(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$",
+    re.IGNORECASE,
+)
 # The source step named by an indexes clause (graphcheck's listing
 # edge treats indexes exactly like covers: both consume the listing
 # field a listing step produces).
@@ -237,6 +248,20 @@ def _analyze(task: str, steps: list, workspace_files=None):
                         produced.append(parsed[1])
                     elif not producing:
                         add("file", parsed[1], parsed[1])
+                continue
+            legacy = _COVERS_CLAUSE.match(t)
+            if legacy:
+                # A covers clause in a saved plan: parse_then returns
+                # None now that the verb is retired, but the clause
+                # still consumes the listing step's files, and its
+                # quoted target is still the step's deliverable.
+                n = int(legacy.group(2))
+                add("listing", str(n), f"files from step {n}")
+                target = legacy.group(1)
+                if producing and target not in produced:
+                    produced.append(target)
+                elif not producing:
+                    add("file", target, target)
                 continue
             # Step references in a non-covers Then still consume the
             # referenced step's stored output.

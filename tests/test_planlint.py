@@ -207,6 +207,75 @@ def t_mv_does_not_mask_a_real_dangling():
           "Organization/organization.md" in errs[0].detail, errs[0].detail)
 
 
+_PER_ITEM_TASK = ("Create an audit index of the files in the workspace, "
+                  "listing every file with its exact filename and a "
+                  "one-line description of what it contains.")
+
+
+def _per_item_hits(fs):
+    return [f for f in fs if f.code == "per_item_instead_of_indexes"]
+
+
+def t_per_item_clauses_error_with_living_replacements():
+    steps = _steps(_PER_ITEM_TASK, [
+        ("I list the files in the workspace", "the output lists the files"),
+        ("I read each file from step 1 and write audit-index.md",
+         '"audit-index.md" contains an entry for "a.txt"\n'
+         '"audit-index.md" contains an entry for "b.txt"\n'
+         '"audit-index.md" contains an entry for "c.txt"'),
+    ])
+    fs = planlint.lint_plan(_PER_ITEM_TASK, steps)
+    hits = _per_item_hits(fs)
+    check("per-item aggregate fires once", len(hits) == 1,
+          f"{[(f.code, f.detail) for f in fs]}")
+    check("per-item aggregate is a retryable error",
+          hits[0].level == "error", hits[0].level)
+    check("per-item aggregate is on step 2", hits[0].step_id == 2,
+          str(hits[0].step_id))
+    check("feedback names the indexes replacement",
+          '"audit-index.md" indexes the files from step 1' in hits[0].detail,
+          hits[0].detail)
+    check("feedback names the accounts_for alternative",
+          '"audit-index.md" accounts for the files from step 1'
+          in hits[0].detail, hits[0].detail)
+
+
+def t_per_item_suppressed_by_completeness_clause():
+    steps = _steps(_PER_ITEM_TASK, [
+        ("I list the files in the workspace", "the output lists the files"),
+        ("I read each file from step 1 and write audit-index.md",
+         '"audit-index.md" contains an entry for "a.txt"\n'
+         '"audit-index.md" contains an entry for "b.txt"\n'
+         '"audit-index.md" indexes the files from step 1'),
+    ])
+    fs = planlint.lint_plan(_PER_ITEM_TASK, steps)
+    check("completeness clause present: rule silent",
+          _per_item_hits(fs) == [], f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_single_per_item_clause_no_fire():
+    steps = _steps(_PER_ITEM_TASK, [
+        ("I list the files in the workspace", "the output lists the files"),
+        ("I write audit-index.md",
+         '"audit-index.md" contains an entry for "a.txt"'),
+    ])
+    fs = planlint.lint_plan(_PER_ITEM_TASK, steps)
+    check("one per-item clause: rule silent", _per_item_hits(fs) == [],
+          f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_per_item_no_listing_step_no_fire():
+    steps = _steps(_PER_ITEM_TASK, [
+        ("I read the files I need", "the output shows the values"),
+        ("I write audit-index.md",
+         '"audit-index.md" contains an entry for "a.txt"\n'
+         '"audit-index.md" contains an entry for "b.txt"'),
+    ])
+    fs = planlint.lint_plan(_PER_ITEM_TASK, steps)
+    check("no listing step: rule silent", _per_item_hits(fs) == [],
+          f"{[(f.code, f.detail) for f in fs]}")
+
+
 def t_gherkin_still_validates_first():
     # Structural rejection still works and doesn't reach the lint.
     calls = []
@@ -228,6 +297,10 @@ if __name__ == "__main__":
                t_mv_destination_not_dangling, t_mv_rename_and_cp_destinations,
                t_mv_does_not_mask_a_real_dangling,
                t_good_plan_clean, t_lint_retry_integration, t_clean_plan_no_retry,
+               t_per_item_clauses_error_with_living_replacements,
+               t_per_item_suppressed_by_completeness_clause,
+               t_single_per_item_clause_no_fire,
+               t_per_item_no_listing_step_no_fire,
                t_gherkin_still_validates_first]:
         fn()
     # parse_then sanity (verify.py helper the lint relies on)

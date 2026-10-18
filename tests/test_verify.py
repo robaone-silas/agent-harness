@@ -237,11 +237,29 @@ def t_prose_not_literal():
     shutil.rmtree(d)
 
 
+def t_covers_clause_falls_to_attestation():
+    # The covers verb is removed: its clause shape parses to no
+    # verifier, so a saved plan carrying one is taken on trust,
+    # subject to the existence floor like any prose Then. The living
+    # completeness verbs still parse.
+    check("covers clause parses to no verifier",
+          verify.parse_then('"guide.md" covers the files from step 1')
+          is None)
+    check("indexes clause still parses",
+          (verify.parse_then('"guide.md" indexes the files from step 1')
+           or (None,))[0] == "indexes")
+    check("accounts_for clause still parses",
+          (verify.parse_then('"guide.md" accounts for the files '
+                             'from step 1')
+           or (None,))[0] == "accounts_for")
+
+
 if __name__ == "__main__":
     for fn in [t_exists, t_contains, t_contains_exactly, t_has_lines,
                t_not_exists_and_attest, t_prose_not_literal,
                t_verify_retry_integration,
                t_verify_exhausted, t_subrun_failure_still_hard,
-               t_attest_passes_through]:
+               t_attest_passes_through,
+               t_covers_clause_falls_to_attestation]:
         fn()
     print("\nAll verify tests passed.")

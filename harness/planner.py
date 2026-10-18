@@ -107,7 +107,7 @@ Feature: Reading guide
   Scenario: Step 2 - Write the guide
     Intent: each entry gives the article's title and a one-sentence summary of its argument, not the article text
     When I read each article from step 1 and write guide.md with one entry per article
-    Then "guide.md" indexes the files from step 1
+    Then "guide.md" has one entry for each article from step 1, and each entry gives the article's title and a one-sentence summary of its argument
 
 Task: Build a catalog of the songs in this folder, one entry per song with its length
 Feature: Song catalog
@@ -124,7 +124,7 @@ Feature: Song catalog
   Scenario: Step 4 - Write the catalog
     Intent: one entry per song with its length, covering every song from step 1
     When I write catalog.md with one entry per song from the notes in steps 2 and 3
-    Then "catalog.md" indexes the files from step 1
+    Then "catalog.md" has one entry for each song from step 1, with its length as noted in steps 2 and 3
 
 Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
 Feature: Quarterly total
@@ -144,11 +144,13 @@ Feature: Seed packet inventory
   Scenario: Step 2 - Write the inventory
     Intent: each entry names the plant and what it is for, in a file the user can keep
     When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
-    Then "seed-inventory.txt" indexes the files from step 1
+    Then "seed-inventory.txt" has one entry for each packet from step 1, naming the plant and what it is for
 
 In the catalog example, note the shape: the per-item steps only gather,
-and the final step carries the indexes check against the listing step.
-Splitting the work across steps never splits away the completeness check.
+and the final step still answers for every song from step 1 in a
+single clause. Splitting the work across steps
+never splits away the completeness obligation, and the obligation is
+never scattered into one clause per file.
 
 """
 
@@ -206,7 +208,13 @@ Rules:
   `"out.txt" indexes the files from step N`. For an
   `indexes` step the harness builds that file itself: it reads each
   listed file, gets a one-line description of each, and writes the
-  target with one entry per file, so no file can be omitted.
+  target with one entry per file, so no file can be omitted. Those
+  descriptions are the harness's own generic one-liners. When each
+  entry must carry specific content from the files (a title, a
+  summary of its argument, a measured length), a generic description
+  cannot promise it: keep the writing with the step itself and state
+  that contract in a prose Then instead, as the reading guide
+  example does.
 - When a step compiles records that earlier steps READ (not listed)
   into a deliverable, and the fields each record must contribute
   matter (the task names them: a customer, an item, a status), write

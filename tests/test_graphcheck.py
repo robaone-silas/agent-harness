@@ -144,6 +144,45 @@ def t_listing_clause_source_not_a_listing():
           str(hits[0].step_id))
 
 
+def t_legacy_covers_clause_keeps_its_listing_edge():
+    # A covers clause in a saved plan: the verb is no longer offered,
+    # so parse_then returns None for it, but the graph still
+    # understands the clause shape (see _COVERS_SOURCE in graphcheck):
+    # the clause consumes the listing step's files and its quoted
+    # target is the step's deliverable.
+    steps = [PlanStep(id=1, instruction="I list the files in the workspace",
+                      done_when="the output lists the files"),
+             PlanStep(id=2, instruction="I write audit-index.md",
+                      done_when='"audit-index.md" covers the files from step 1')]
+    g = graphcheck.build_graph(PRIYA_TASK, steps)
+    n2 = g.nodes[1]
+    check("legacy covers: compile node consumes the file list",
+          "files from step 1" in n2.inputs, str(n2.inputs))
+    check("legacy covers: compile node outputs the index",
+          "audit-index.md" in n2.outputs, str(n2.outputs))
+    edges = {(e.producer, e.consumer, e.field) for e in g.edges}
+    check("legacy covers: listing edge runs step 1 -> step 2",
+          (1, 2, "files from step 1") in edges, str(edges))
+    fs = graphcheck.check_plan(PRIYA_TASK, steps)
+    check("legacy covers from a listing step: no graph findings",
+          fs == [], f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_legacy_covers_source_not_a_listing():
+    steps = [PlanStep(id=1, instruction="I read values.csv carefully",
+                      done_when='"values.csv" exists'),
+             PlanStep(id=2, instruction="I write audit-index.md",
+                      done_when='"audit-index.md" covers the files from step 1')]
+    fs = graphcheck.check_plan(PRIYA_TASK, steps)
+    hits = _by_code(fs, "covers_source_not_a_listing")
+    check("legacy covers from a non-listing step fires once",
+          len(hits) == 1, f"{[(f.code, f.detail) for f in fs]}")
+    check("legacy covers source finding is an error",
+          hits[0].level == "error", hits[0].level)
+    check("legacy covers source finding is on step 2",
+          hits[0].step_id == 2, str(hits[0].step_id))
+
+
 def t_unsatisfied_input_workspace_aware():
     steps = [PlanStep(id=1, instruction="I read missing-data.csv and write summary.md",
                       done_when='"summary.md" exists')]

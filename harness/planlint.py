@@ -25,6 +25,17 @@ Checks:
                      Intent, When, or Then — decomposition may have
                      silently traded the task's intent for mechanics
                      (field: "a one-line description" became "the content").
+  per_item_instead_of_indexes (ERROR): a listing step followed by a
+                     step carrying at least two unmatched per-item
+                     containment Then clauses against the same target
+                     and no indexes or accounts_for clause for that
+                     target (field, issue #5: Priya's
+                     `"audit-index.md" contains an entry for "<file>"`
+                     times six). Completeness expressed that way
+                     matches no verifier and rests entirely on trust;
+                     one indexes clause (the step reads the files) or
+                     accounts_for clause (filenames alone) is the
+                     machine-checkable form.
   unaccounted_file   (WARN, workspace-aware): under narrow exhaustive
                      cues (a list, inventory, index, or catalogue task,
                      or all/every/each of the files), a workspace root
@@ -66,6 +77,13 @@ _BARE_PATH = re.compile(r"(?<![\w./-])([\w-]+(?:[./][\w.-]+)+)(?![\w.-])")
 _CHECKY = re.compile(
     r"""contains?\s+(exactly\s+)?["'`]|\bexists?\s*[.!]*$|does\s+not\s+exist|"""
     r"""has\s+\d+\s+lines?|covers?\s+the\s+files""",
+    re.IGNORECASE,
+)
+# One per-item containment clause ('"index.md" contains an entry for
+# "a.txt"'): counted per target by the per-item aggregate rule.
+_PER_ITEM_CONTAINS = re.compile(
+    r"""^\s*(?:the\s+file\s+)?["'`]([^"'`]+)["'`]\s+(?:should\s+)?"""
+    r"""contains?\b.*["'`]([^"'`]+)["'`]""",
     re.IGNORECASE,
 )
 # A step whose When lists files (the source set a later deliverable is
@@ -204,6 +222,31 @@ def _move_destinations(text: str) -> set[str]:
 # If the task uses one and no step does, the spec likely died in
 # decomposition (intent_drift). Stems, matched case-insensitively.
 _SPEC_STEMS = ("descri", "summar", "caption", "one-line", "one-sentence")
+
+
+def _per_item_finding(step_id: int, listing_id: int,
+                      per_item: dict, completeness_targets: set):
+    """The issue #5 aggregate near miss, as a retryable ERROR.
+
+    Fires when a deliverable step checks one target with at least two
+    unmatched per-item containment clauses and carries no indexes or
+    accounts_for clause for that target. The detail is the retry
+    feedback, so it names the replacement clauses the planner should
+    write: indexes when the step reads the files, accounts_for when
+    it works from the filenames alone."""
+    for target, count in per_item.items():
+        if count >= 2 and target not in completeness_targets:
+            return LintFinding(
+                step_id, "error", "per_item_instead_of_indexes",
+                f"Step {step_id}: {count} Then clauses check "
+                f"\"{target}\" one file at a time, but none of them "
+                f"matches a verifier, so completeness would be taken "
+                f"on trust. Replace those per-item clauses with one "
+                f"clause: \"{target}\" indexes the files from step "
+                f"{listing_id} if the step reads the files, or "
+                f"\"{target}\" accounts for the files from step "
+                f"{listing_id} if it works from the filenames alone.")
+    return None
 
 
 def _intent_drift(task: str, steps: list) -> LintFinding | None:
@@ -405,9 +448,15 @@ def lint_plan(task: str, steps: list,
                 or _GENERIC_LISTING.search(s.done_when or ""):
             generic_listing = True
         thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
+        per_item: dict[str, int] = {}
+        completeness_targets: set[str] = set()
         for t in thens:
             parsed = _verify.parse_then(t)
             if parsed is None:
+                m = _PER_ITEM_CONTAINS.match(t)
+                if m:
+                    target = m.group(1).strip()
+                    per_item[target] = per_item.get(target, 0) + 1
                 if _CHECKY.search(t):
                     findings.append(LintFinding(
                         s.id, "warn", "unparseable_check",
@@ -415,6 +464,10 @@ def lint_plan(task: str, steps: list,
                         f"verifier — it will be taken on trust: {t[:80]}"))
                 continue
             _name, path, value = parsed
+            if _name in ("indexes", "accounts_for") and path:
+                # A machine-checked completeness clause for this
+                # target suppresses the per-item aggregate error.
+                completeness_targets.add(path)
             if _name == "indexes" and path:
                 # The indexes clause is the machine-checked
                 # completeness form (the harness builds the target
@@ -444,6 +497,11 @@ def lint_plan(task: str, steps: list,
                         f"Step {s.id}: Then asserts exact value '{v[:60]}', "
                         f"which appears nowhere in the task or prior steps — "
                         f"computed or invented?"))
+        if listing_ids:
+            agg = _per_item_finding(s.id, listing_ids[-1], per_item,
+                                    completeness_targets)
+            if agg is not None:
+                findings.append(agg)
         if _LISTING.search(s.instruction or ""):
             listing_ids.append(s.id)
     drift = _intent_drift(task, steps)

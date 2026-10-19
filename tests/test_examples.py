@@ -87,9 +87,35 @@ def t_request_plan_still_works_with_examples():
         shutil.rmtree(d)
 
 
+def t_content_shaped_exemplars_use_attested_clauses():
+    # Exemplars whose entries must carry specific content from the
+    # files (an article's title and argument, a song's length, a
+    # plant's purpose) keep the work with the executor: indexes would
+    # replace the planned reading with the harness's generic one-line
+    # descriptions, which cannot promise those fields. Their Thens
+    # state the contract as prose instead. The recipe exemplar, a
+    # plain filename and description index, keeps the indexes clause.
+    p = planner.build_planner_prompt("organize my stuff", ["list_dir"])
+    check("guide exemplar states its contract in the Then",
+          '"guide.md" has one entry for each article from step 1' in p
+          and "a one-sentence summary of its argument" in p)
+    check("guide exemplar no longer routes through indexes",
+          '"guide.md" indexes the files from step 1' not in p)
+    check("catalog exemplar states its contract in the Then",
+          '"catalog.md" has one entry for each song from step 1' in p)
+    check("catalog exemplar no longer routes through indexes",
+          '"catalog.md" indexes the files from step 1' not in p)
+    check("seed exemplar states its contract in the Then",
+          '"seed-inventory.txt" has one entry for each packet from step 1'
+          in p)
+    check("seed exemplar no longer routes through indexes",
+          '"seed-inventory.txt" indexes the files from step 1' not in p)
+
+
 if __name__ == "__main__":
     for fn in [t_examples_present_with_intent,
                t_examples_come_before_task_and_digest_stays_last,
+               t_content_shaped_exemplars_use_attested_clauses,
                t_request_plan_still_works_with_examples]:
         fn()
     print("\nAll planner example tests passed.")

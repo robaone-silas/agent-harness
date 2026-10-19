@@ -222,80 +222,87 @@ def _analyze(task: str, steps: list, workspace_files=None):
     produced_by_file: dict[str, list] = {}
     listing_steps: set[int] = set()
     raw_inputs: dict[int, list] = {}  # step id -> [(kind, key, label)]
-    for s in steps:
-        produced, consumed = _classify_when(s.instruction or "",
+    for step in steps:
+        produced, consumed = _classify_when(step.instruction or "",
                                             workspace_set)
-        thens = [t.strip() for t in (s.done_when or "").split("\n")
-                 if t.strip()]
-        producing = bool(_PRODUCE_VERB.search(s.instruction or ""))
-        items: list[tuple[str, str, str]] = []
-        seen: set[tuple[str, str]] = set()
+        thens = [text.strip() for text in (step.done_when or "").split("\n")
+                 if text.strip()]
+        producing = bool(_PRODUCE_VERB.search(step.instruction or ""))
+        step_inputs: list[tuple[str, str, str]] = []
+        seen_inputs: set[tuple[str, str]] = set()
 
-        def add(kind, key, label):
-            if (kind, key) not in seen:
-                seen.add((kind, key))
-                items.append((kind, key, label))
+        def record_input(kind, source_key, label):
+            if (kind, source_key) not in seen_inputs:
+                seen_inputs.add((kind, source_key))
+                step_inputs.append((kind, source_key, label))
 
-        for t in thens:
-            parsed = _verify.parse_then(t)
+        for clause in thens:
+            parsed = _verify.parse_then(clause)
             if parsed and parsed[0] in ("covers", "indexes",
                                         "accounts_for"):
-                src = _COVERS_SOURCE.search(t) \
-                    or _INDEXES_SOURCE.search(t) \
-                    or _ACCOUNTS_SOURCE.search(t)
-                if src:
-                    n = int(src.group(1))
-                    add("listing", str(n), f"files from step {n}")
-                if parsed[1]:
-                    if producing and parsed[1] not in produced:
-                        produced.append(parsed[1])
+                subject_file = parsed[1]
+                source_match = _COVERS_SOURCE.search(clause) \
+                    or _INDEXES_SOURCE.search(clause) \
+                    or _ACCOUNTS_SOURCE.search(clause)
+                if source_match:
+                    source_step_id = int(source_match.group(1))
+                    record_input("listing", str(source_step_id),
+                                 f"files from step {source_step_id}")
+                if subject_file:
+                    if producing and subject_file not in produced:
+                        produced.append(subject_file)
                     elif not producing:
-                        add("file", parsed[1], parsed[1])
+                        record_input("file", subject_file, subject_file)
                 continue
-            legacy = _COVERS_CLAUSE.match(t)
-            if legacy:
+            covers_match = _COVERS_CLAUSE.match(clause)
+            if covers_match:
                 # A covers clause in a saved plan: parse_then returns
                 # None now that the verb is retired, but the clause
                 # still consumes the listing step's files, and its
                 # target is still the step's deliverable. The target
                 # is whichever of the four grammar alternatives
                 # matched (the retired verifier's _pick rule).
-                n = int(legacy.group(5))
-                add("listing", str(n), f"files from step {n}")
-                target = next((g for g in legacy.groups()[:4]
-                               if g is not None), None)
+                source_step_id = int(covers_match.group(5))
+                record_input("listing", str(source_step_id),
+                             f"files from step {source_step_id}")
+                target = next((alternative for alternative
+                               in covers_match.groups()[:4]
+                               if alternative is not None), None)
                 if target:
                     if producing and target not in produced:
                         produced.append(target)
                     elif not producing:
-                        add("file", target, target)
+                        record_input("file", target, target)
                 continue
             # Step references in a non-covers Then still consume the
             # referenced step's stored output.
-            for m in _STEP_REF.finditer(t):
-                n = int(m.group(1))
-                add("record", str(n), f"step {n} output")
-            if parsed and parsed[1]:
-                if producing and parsed[1] not in produced:
-                    produced.append(parsed[1])
+            for step_ref in _STEP_REF.finditer(clause):
+                source_step_id = int(step_ref.group(1))
+                record_input("record", str(source_step_id),
+                             f"step {source_step_id} output")
+            subject_file = parsed[1] if parsed else None
+            if subject_file:
+                if producing and subject_file not in produced:
+                    produced.append(subject_file)
                 elif not producing:
-                    add("file", parsed[1], parsed[1])
-        for text in (s.given or "", s.instruction or ""):
-            for m in _STEP_REF.finditer(text):
-                n = int(m.group(1))
-                add("record", str(n), f"step {n} output")
-        for name in _planlint._mentions(s.given or ""):
-            add("file", name, name)
+                    record_input("file", subject_file, subject_file)
+        for text in (step.given or "", step.instruction or ""):
+            for step_ref in _STEP_REF.finditer(text):
+                source_step_id = int(step_ref.group(1))
+                record_input("record", str(source_step_id),
+                             f"step {source_step_id} output")
+        for name in _planlint._mentions(step.given or ""):
+            record_input("file", name, name)
         for name in consumed:
-            add("file", name, name)
-        if _is_listing(s):
-            listing_steps.add(s.id)
-            produced.append(f"files from step {s.id}")
-        produced_by_step[s.id] = produced
+            record_input("file", name, name)
+        if _is_listing(step):
+            listing_steps.add(step.id)
+            produced.append(f"files from step {step.id}")
+        produced_by_step[step.id] = produced
         for name in produced:
             if not name.startswith("files from step "):
-                produced_by_file.setdefault(name, []).append(s.id)
-        raw_inputs[s.id] = items
+                produced_by_file.setdefault(name, []).append(step.id)
+        raw_inputs[step.id] = step_inputs
 
     # Second pass: resolve consumptions into edges and findings.
     nodes: list[GraphNode] = []
@@ -317,64 +324,68 @@ def _analyze(task: str, steps: list, workspace_files=None):
             finding_keys.add(key)
             findings.append(LintFinding(step_id, level, code, detail))
 
-    for s in steps:
-        node = GraphNode(step_id=s.id, title=getattr(s, "title", "") or "",
-                         outputs=list(produced_by_step[s.id]))
-        for kind, key, label in raw_inputs[s.id]:
+    for step in steps:
+        node = GraphNode(step_id=step.id,
+                         title=getattr(step, "title", "") or "",
+                         outputs=list(produced_by_step[step.id]))
+        for kind, source_key, label in raw_inputs[step.id]:
             if label not in node.inputs:
                 node.inputs.append(label)
             if kind in ("record", "listing"):
-                n = int(key)
-                if not 1 <= n < s.id:
-                    if n == s.id:
-                        why = f"step {n} is itself"
-                    elif n <= total:
-                        why = f"step {n} has not run yet"
+                source_step_id = int(source_key)
+                if not 1 <= source_step_id < step.id:
+                    if source_step_id == step.id:
+                        reason = f"step {source_step_id} is itself"
+                    elif source_step_id <= total:
+                        reason = f"step {source_step_id} has not run yet"
                     else:
-                        why = f"there is no step {n}"
+                        reason = f"there is no step {source_step_id}"
                     add_finding(
-                        s.id, "error", "unresolved_step_reference",
-                        f"Step {s.id}: it consumes '{label}', but "
-                        f"{why}, so that field does not exist when "
+                        step.id, "error", "unresolved_step_reference",
+                        f"Step {step.id}: it consumes '{label}', but "
+                        f"{reason}, so that field does not exist when "
                         f"this step runs.")
                     continue
-                if kind == "listing" and n not in listing_steps:
+                if kind == "listing" and source_step_id not in listing_steps:
                     add_finding(
-                        s.id, "error", "covers_source_not_a_listing",
-                        f"Step {s.id}: a completeness clause draws "
-                        f"its file list from step {n}, but step {n} "
-                        f"produces no file list (its When does not "
-                        f"list or gather files), so the completeness "
-                        f"check has no source set to check against.")
+                        step.id, "error", "covers_source_not_a_listing",
+                        f"Step {step.id}: a completeness clause draws "
+                        f"its file list from step {source_step_id}, "
+                        f"but step {source_step_id} produces no file "
+                        f"list (its When does not list or gather "
+                        f"files), so the completeness check has no "
+                        f"source set to check against.")
                     continue
-                add_edge(n, s.id, label, kind)
+                add_edge(source_step_id, step.id, label, kind)
             else:  # a file field
-                consumed_files.add(key)
-                producers = produced_by_file.get(key, [])
-                earlier = [p for p in producers if p < s.id]
-                later = [p for p in producers if p > s.id]
+                consumed_files.add(source_key)
+                producers = produced_by_file.get(source_key, [])
+                earlier = [producer_id for producer_id in producers
+                           if producer_id < step.id]
+                later = [producer_id for producer_id in producers
+                         if producer_id > step.id]
                 if earlier:
-                    add_edge(earlier[-1], s.id, key, "file")
+                    add_edge(earlier[-1], step.id, source_key, "file")
                 elif later:
-                    add_edge(later[0], s.id, key, "file")
+                    add_edge(later[0], step.id, source_key, "file")
                     add_finding(
-                        s.id, "warn", "consumed_before_produced",
-                        f"Step {s.id}: it consumes '{key}', which "
-                        f"only step {later[0]} produces, and that "
-                        f"step runs later. The data flow points "
+                        step.id, "warn", "consumed_before_produced",
+                        f"Step {step.id}: it consumes '{source_key}', "
+                        f"which only step {later[0]} produces, and "
+                        f"that step runs later. The data flow points "
                         f"backward: reorder the steps or move the "
                         f"consumption.")
-                elif key in task_mentions or (
+                elif source_key in task_mentions or (
                         workspace_set is not None
-                        and key in workspace_set):
+                        and source_key in workspace_set):
                     pass  # an external input: the task or the workspace
-                elif workspace_set is not None and "/" not in key:
+                elif workspace_set is not None and "/" not in source_key:
                     add_finding(
-                        s.id, "warn", "unsatisfied_input",
-                        f"Step {s.id}: it reads '{key}', which no "
-                        f"earlier step produces, the task does not "
-                        f"name, and the workspace does not contain. "
-                        f"The step's input has no source.")
+                        step.id, "warn", "unsatisfied_input",
+                        f"Step {step.id}: it reads '{source_key}', "
+                        f"which no earlier step produces, the task "
+                        f"does not name, and the workspace does not "
+                        f"contain. The step's input has no source.")
         nodes.append(node)
 
     if steps:

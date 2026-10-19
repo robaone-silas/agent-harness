@@ -227,7 +227,7 @@ _SPEC_STEMS = ("descri", "summar", "caption", "one-line", "one-sentence")
 
 
 def _per_item_finding(step_id: int, listing_id: int,
-                      per_item: dict, completeness_targets: set):
+                      per_item_counts: dict, completeness_targets: set):
     """The issue #5 aggregate near miss, as a retryable ERROR.
 
     Fires when a deliverable step checks one target with at least two
@@ -240,7 +240,7 @@ def _per_item_finding(step_id: int, listing_id: int,
     contract when each entry must carry specific content from the
     files (a title, a summary of its argument, a measured value),
     which the generic index cannot promise."""
-    for target, count in per_item.items():
+    for target, count in per_item_counts.items():
         if count >= 2 and target not in completeness_targets:
             return LintFinding(
                 step_id, "error", "per_item_instead_of_indexes",
@@ -459,34 +459,36 @@ def lint_plan(task: str, steps: list,
         if _GENERIC_LISTING.search(s.instruction or "") \
                 or _GENERIC_LISTING.search(s.done_when or ""):
             generic_listing = True
-        thens = [t.strip() for t in (s.done_when or "").split("\n") if t.strip()]
-        per_item: dict[str, int] = {}
+        thens = [text.strip() for text in (s.done_when or "").split("\n")
+                 if text.strip()]
+        per_item_counts: dict[str, int] = {}
         completeness_targets: set[str] = set()
-        for t in thens:
-            parsed = _verify.parse_then(t)
+        for clause in thens:
+            parsed = _verify.parse_then(clause)
             if parsed is None:
-                m = _PER_ITEM_CONTAINS.match(t)
-                if m:
-                    target = m.group(1).strip()
-                    per_item[target] = per_item.get(target, 0) + 1
-                if _CHECKY.search(t):
+                per_item_match = _PER_ITEM_CONTAINS.match(clause)
+                if per_item_match:
+                    target = per_item_match.group(1).strip()
+                    per_item_counts[target] = \
+                        per_item_counts.get(target, 0) + 1
+                if _CHECKY.search(clause):
                     findings.append(LintFinding(
                         s.id, "warn", "unparseable_check",
                         f"Step {s.id}: Then reads like a check but matches no "
-                        f"verifier — it will be taken on trust: {t[:80]}"))
+                        f"verifier — it will be taken on trust: {clause[:80]}"))
                 continue
-            _name, path, value = parsed
-            if _name in ("indexes", "accounts_for") and path:
+            verb, path, value = parsed
+            if verb in ("indexes", "accounts_for") and path:
                 # A machine-checked completeness clause for this
                 # target suppresses the per-item aggregate error.
                 completeness_targets.add(path)
-            if _name == "indexes" and path:
+            if verb == "indexes" and path:
                 # The indexes clause is the machine-checked
                 # completeness form (the harness builds the target
                 # itself, one entry per source file): it accounts
                 # for the listing.
                 indexes_any = True
-            if _name == "accounts_for" and path:
+            if verb == "accounts_for" and path:
                 # The accounts_for clause is the strict listing-only
                 # completeness form: it accounts for the listing in
                 # the same bookkeeping as indexes (its step writes
@@ -502,18 +504,20 @@ def lint_plan(task: str, steps: list,
                     f"Step {s.id}: Then refers to '{path}', which no step "
                     f"creates and the task doesn't mention."))
             if value:
-                v = value.strip()
-                if v and not any(v in w for w in whens):
+                asserted = value.strip()
+                if asserted and not any(asserted in w for w in whens):
                     findings.append(LintFinding(
                         s.id, "warn", "value_from_nowhere",
-                        f"Step {s.id}: Then asserts exact value '{v[:60]}', "
-                        f"which appears nowhere in the task or prior steps — "
-                        f"computed or invented?"))
+                        f"Step {s.id}: Then asserts exact value "
+                        f"'{asserted[:60]}', which appears nowhere in "
+                        f"the task or prior steps — computed or "
+                        f"invented?"))
         if listing_ids:
-            agg = _per_item_finding(s.id, listing_ids[-1], per_item,
-                                    completeness_targets)
-            if agg is not None:
-                findings.append(agg)
+            aggregate_finding = _per_item_finding(
+                s.id, listing_ids[-1], per_item_counts,
+                completeness_targets)
+            if aggregate_finding is not None:
+                findings.append(aggregate_finding)
         if _LISTING.search(s.instruction or ""):
             listing_ids.append(s.id)
     drift = _intent_drift(task, steps)

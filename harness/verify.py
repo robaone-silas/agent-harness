@@ -675,10 +675,10 @@ def _legacy_covers_target(then: str) -> str | None:
     clause is not one. A covers clause is a positive existence
     promise by construction: its target is the deliverable,
     whatever words the filename itself contains."""
-    m = _COVERS_CLAUSE.match(then or "")
-    if not m:
+    covers_match = _COVERS_CLAUSE.match(then or "")
+    if not covers_match:
         return None
-    name = _pick(*m.groups())
+    name = _pick(*covers_match.groups())
     return name.strip() if name else None
 
 
@@ -689,13 +689,14 @@ def _named_file(then: str) -> str | None:
     a quoted phrase) is not a file. A retired covers clause also
     names its target, in the grammar above, quoted or bare. Pure
     phrasing; never touches the workspace."""
-    legacy = _legacy_covers_target(then)
-    if legacy is not None:
-        return legacy
-    m = _QUOTED.search(then or "")
-    if not m:
+    covers_target = _legacy_covers_target(then)
+    if covers_target is not None:
+        return covers_target
+    quoted_match = _QUOTED.search(then or "")
+    if not quoted_match:
         return None
-    name = next(g for g in m.groups() if g is not None).strip()
+    name = next(alternative for alternative in quoted_match.groups()
+                if alternative is not None).strip()
     if not name or any(c.isspace() for c in name):
         return None
     if "/" in name or re.search(r"\.[\w-]+$", name):
@@ -718,16 +719,16 @@ def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     retired covers clause is never absence intent: it promises
     its target exists, even when the filename itself contains an
     absence word."""
-    named = _named_file(then)
-    if named and (_legacy_covers_target(then) is not None
-                  or not _ABSENCE_INTENT.search(then)):
-        p, err = _resolve(ctx, named)
-        if not err and p is not None and not p.exists():
+    named_file = _named_file(then)
+    if named_file and (_legacy_covers_target(then) is not None
+                       or not _ABSENCE_INTENT.search(then)):
+        path, err = _resolve(ctx, named_file)
+        if not err and path is not None and not path.exists():
             return CheckResult(
                 then, False, "attest",
-                f"named file {named!r} does not exist — a clause "
+                f"named file {named_file!r} does not exist — a clause "
                 f"about a file cannot pass on trust while the file "
-                f"is missing; create {named!r} with the promised "
+                f"is missing; create {named_file!r} with the promised "
                 f"content")
     return CheckResult(then, True, "attest",
                        "no verifier matched — taking the model's word")
@@ -744,29 +745,29 @@ def promised_deliverables(steps) -> list[str]:
     the end of the run."""
     promised: list[str] = []
     excluded: set[str] = set()
-    for s in steps:
-        for clause in (s.done_when or "").split("\n"):
+    for step in steps:
+        for clause in (step.done_when or "").split("\n"):
             clause = clause.strip()
             if not clause:
                 continue
             parsed = parse_then(clause)
             if parsed:
-                name, path, _value = parsed
+                verb, path, _value = parsed
                 if path is None:
                     continue
-                if name == "not_exists":
+                if verb == "not_exists":
                     excluded.add(path)
                 elif path not in promised:
                     promised.append(path)
                 continue
-            named = _named_file(clause)
-            if named is None:
+            named_file = _named_file(clause)
+            if named_file is None:
                 continue
             if (_legacy_covers_target(clause) is None
                     and _ABSENCE_INTENT.search(clause)):
-                excluded.add(named)
-            elif named not in promised:
-                promised.append(named)
+                excluded.add(named_file)
+            elif named_file not in promised:
+                promised.append(named_file)
     return sorted(p for p in promised if p not in excluded)
 
 

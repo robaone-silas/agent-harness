@@ -398,11 +398,14 @@ _PLAN_SHAPE_FEEDBACK = (
 )
 
 
-def _squash(text: str) -> str:
+def _normalize_for_matching(text: str) -> str:
+    """Collapse whitespace and case so two texts can be compared
+    without formatting differences getting in the way."""
     return " ".join((text or "").split()).lower()
 
 
-def _parse_feedback(err: str, content: str, discovery: str = "") -> str:
+def _parse_feedback(parse_error: str, response: str,
+                    discovery_notes: str = "") -> str:
     """The full rejection message for a plan that fails Gherkin parse.
 
     The parser's error names the symptom; the retry stands a better
@@ -414,24 +417,27 @@ def _parse_feedback(err: str, content: str, discovery: str = "") -> str:
     confusion named directly.
     """
     import re
-    parts = [f"That plan was rejected: {err}."]
-    line_match = re.search(r"line (\d+)", err or "")
-    if line_match and discovery:
+    message_parts = [f"That plan was rejected: {parse_error}."]
+    line_match = re.search(r"line (\d+)", parse_error or "")
+    if line_match and discovery_notes:
         # The parser numbers lines in the fence-stripped text, so
         # read the offending line from that same text: indexing the
         # raw response lands one line early whenever the model
         # wrapped its plan in a Markdown fence.
-        lines = gherkin._strip_fences(content or "").splitlines()
+        plan_lines = gherkin._strip_fences(response or "").splitlines()
         line_number = int(line_match.group(1))
-        if 1 <= line_number <= len(lines):
-            offending = _squash(lines[line_number - 1])
-            if offending and offending in _squash(discovery):
-                parts.append(
+        if 1 <= line_number <= len(plan_lines):
+            offending_line = _normalize_for_matching(
+                plan_lines[line_number - 1])
+            if offending_line and offending_line in \
+                    _normalize_for_matching(discovery_notes):
+                message_parts.append(
                     "That line came from the discovery notes; "
                     "do not paste findings into the plan.")
-    parts.append(_PLAN_SHAPE_FEEDBACK)
-    parts.append("Return ONLY the corrected Gherkin, no other text.")
-    return "\n".join(parts)
+    message_parts.append(_PLAN_SHAPE_FEEDBACK)
+    message_parts.append(
+        "Return ONLY the corrected Gherkin, no other text.")
+    return "\n".join(message_parts)
 
 
 def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,

@@ -98,38 +98,38 @@ def check(name, cond, detail=""):
 
 
 def _scripted(responses):
-    calls = []
+    prompts = []
 
     def fake_chat(messages, tools):
-        calls.append(messages[-1]["content"])
-        return {"content": responses[min(len(calls) - 1,
+        prompts.append(messages[-1]["content"])
+        return {"content": responses[min(len(prompts) - 1,
                                           len(responses) - 1)]}
-    return fake_chat, calls
+    return fake_chat, prompts
 
 
 def _request(responses, discovery=""):
-    fake_chat, calls = _scripted(responses)
+    fake_chat, prompts = _scripted(responses)
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(workspace=tmp)
         text, steps = planner.request_plan(
             TASK, [], fake_chat, cfg, discovery=discovery)
-    return text, steps, calls
+    return text, steps, prompts
 
 
 def t_parse_feedback_names_the_error():
-    _text, steps, calls = _request([BAD_PLAN_JUNK, GOOD_PLAN])
-    check("the retry happened", len(calls) == 2, str(len(calls)))
+    _text, steps, prompts = _request([BAD_PLAN_JUNK, GOOD_PLAN])
+    check("the retry happened", len(prompts) == 2, str(len(prompts)))
     check("the corrected plan was accepted", isinstance(steps, list),
           str(steps)[:120])
-    feedback = calls[1]
+    feedback = prompts[1]
     check("feedback carries the parser's error",
           "That plan was rejected:" in feedback
           and "not a Gherkin step" in feedback, feedback[:300])
 
 
 def t_parse_feedback_teaches_the_shape():
-    _text, _steps, calls = _request([BAD_PLAN_JUNK, GOOD_PLAN])
-    feedback = calls[1]
+    _text, _steps, prompts = _request([BAD_PLAN_JUNK, GOOD_PLAN])
+    feedback = prompts[1]
     check("feedback states the plan grammar",
           "A plan contains only" in feedback
           and "Given/When/Then" in feedback, feedback[:400])
@@ -147,9 +147,9 @@ def t_parse_feedback_teaches_the_shape():
 
 
 def t_pasted_discovery_line_is_named():
-    _text, _steps, calls = _request(
+    _text, _steps, prompts = _request(
         [BAD_PLAN_PASTED, GOOD_PLAN], discovery=DISCOVERY)
-    feedback = calls[1]
+    feedback = prompts[1]
     check("feedback names the discovery paste",
           "came from the discovery notes" in feedback, feedback[:400])
 
@@ -161,27 +161,27 @@ def t_pasted_discovery_line_is_named_when_fenced():
     # on the line above the finding (here the preceding Then), and
     # the discovery-paste warning was silently dropped.
     fenced = "```gherkin\n" + BAD_PLAN_PASTED + "```\n"
-    _text, _steps, calls = _request([fenced, GOOD_PLAN],
+    _text, _steps, prompts = _request([fenced, GOOD_PLAN],
                                     discovery=DISCOVERY)
-    feedback = calls[1]
+    feedback = prompts[1]
     check("fenced paste still names the discovery line",
           "came from the discovery notes" in feedback, feedback[:400])
 
 
 def t_fenced_junk_is_not_blamed_on_discovery():
     fenced = "```gherkin\n" + BAD_PLAN_JUNK + "```\n"
-    _text, _steps, calls = _request([fenced, GOOD_PLAN],
+    _text, _steps, prompts = _request([fenced, GOOD_PLAN],
                                     discovery=DISCOVERY)
-    feedback = calls[1]
+    feedback = prompts[1]
     check("fenced junk is not blamed on the discovery notes",
           "came from the discovery notes" not in feedback,
           feedback[:400])
 
 
 def t_foreign_junk_is_not_blamed_on_discovery():
-    _text, _steps, calls = _request(
+    _text, _steps, prompts = _request(
         [BAD_PLAN_JUNK, GOOD_PLAN], discovery=DISCOVERY)
-    feedback = calls[1]
+    feedback = prompts[1]
     check("unrelated junk is not blamed on the discovery notes",
           "came from the discovery notes" not in feedback,
           feedback[:400])
@@ -190,11 +190,11 @@ def t_foreign_junk_is_not_blamed_on_discovery():
 
 
 def t_lint_feedback_is_unchanged():
-    _text, steps, calls = _request([LINT_BAD_PLAN, LINT_GOOD_PLAN])
-    check("the lint retry happened", len(calls) == 2, str(len(calls)))
+    _text, steps, prompts = _request([LINT_BAD_PLAN, LINT_GOOD_PLAN])
+    check("the lint retry happened", len(prompts) == 2, str(len(prompts)))
     check("the corrected plan was accepted", isinstance(steps, list),
           str(steps)[:120])
-    feedback = calls[1]
+    feedback = prompts[1]
     check("lint feedback keeps its design-flaws form",
           feedback.startswith("That plan has design flaws:"),
           feedback[:200])
@@ -203,25 +203,25 @@ def t_lint_feedback_is_unchanged():
 
 
 def t_discovery_planner_feedback_is_rich():
-    fake_chat, calls = _scripted([BAD_PLAN_JUNK, GOOD_PLAN])
+    fake_chat, prompts = _scripted([BAD_PLAN_JUNK, GOOD_PLAN])
     with tempfile.TemporaryDirectory() as tmp:
         cfg = Config(workspace=tmp)
         text, steps = planner.request_discovery_plan(TASK, cfg, fake_chat)
-    check("the discovery retry happened", len(calls) == 2,
-          str(len(calls)))
+    check("the discovery retry happened", len(prompts) == 2,
+          str(len(prompts)))
     check("the corrected discovery plan was accepted",
           isinstance(steps, list), str(steps)[:120])
-    feedback = calls[1]
+    feedback = prompts[1]
     check("discovery feedback teaches the shape too",
           "A plan contains only" in feedback
           and "Scenario: Step 1 -" in feedback, feedback[:400])
 
 
 def main():
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("t_")]
-    for fn in fns:
-        fn()
-    print(f"{len(fns)} tests passed")
+    test_functions = [value for name, value in sorted(globals().items()) if name.startswith("t_")]
+    for test_function in test_functions:
+        test_function()
+    print(f"{len(test_functions)} tests passed")
 
 
 if __name__ == "__main__":

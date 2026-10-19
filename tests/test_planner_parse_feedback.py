@@ -154,6 +154,30 @@ def t_pasted_discovery_line_is_named():
           "came from the discovery notes" in feedback, feedback[:400])
 
 
+def t_pasted_discovery_line_is_named_when_fenced():
+    # The parser numbers lines after stripping Markdown fences, so
+    # the feedback's line lookup must read that same normalized
+    # text. With a fenced response, indexing the raw response lands
+    # on the line above the finding (here the preceding Then), and
+    # the discovery-paste warning was silently dropped.
+    fenced = "```gherkin\n" + BAD_PLAN_PASTED + "```\n"
+    _text, _steps, calls = _request([fenced, GOOD_PLAN],
+                                    discovery=DISCOVERY)
+    feedback = calls[1]
+    check("fenced paste still names the discovery line",
+          "came from the discovery notes" in feedback, feedback[:400])
+
+
+def t_fenced_junk_is_not_blamed_on_discovery():
+    fenced = "```gherkin\n" + BAD_PLAN_JUNK + "```\n"
+    _text, _steps, calls = _request([fenced, GOOD_PLAN],
+                                    discovery=DISCOVERY)
+    feedback = calls[1]
+    check("fenced junk is not blamed on the discovery notes",
+          "came from the discovery notes" not in feedback,
+          feedback[:400])
+
+
 def t_foreign_junk_is_not_blamed_on_discovery():
     _text, _steps, calls = _request(
         [BAD_PLAN_JUNK, GOOD_PLAN], discovery=DISCOVERY)

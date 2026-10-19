@@ -64,14 +64,17 @@ _COVERS_SOURCE = re.compile(
     r"covers?\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
-# A whole covers clause, anchored the way the retired verifier
-# anchored it: an optional contents-of prefix, a quoted target,
-# "the files", a step reference, and nothing else. parse_then no
-# longer knows this shape, so the graph recognizes it here to keep
-# a saved plan's listing edge and its source validation.
+# A whole covers clause, with the retired verifier's full target
+# grammar: an optional contents-of prefix, an optional "the file"
+# prefix, then a double-quoted, single-quoted, backticked, or bare
+# path, "the files", a step reference, and nothing else. parse_then
+# no longer knows this shape, so the graph recognizes it here to
+# keep a saved plan's listing edge and its source validation.
 _COVERS_CLAUSE = re.compile(
     r"^\s*(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?"
-    r"\"([^\"]+)\"\s+covers?\s+the\s+files\s+"
+    r"(?:the\s+file\s+)?"
+    r"(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`|([\w./\\-]+))"
+    r"\s+covers?\s+the\s+files\s+"
     r"(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$",
     re.IGNORECASE,
 )
@@ -254,14 +257,18 @@ def _analyze(task: str, steps: list, workspace_files=None):
                 # A covers clause in a saved plan: parse_then returns
                 # None now that the verb is retired, but the clause
                 # still consumes the listing step's files, and its
-                # quoted target is still the step's deliverable.
-                n = int(legacy.group(2))
+                # target is still the step's deliverable. The target
+                # is whichever of the four grammar alternatives
+                # matched (the retired verifier's _pick rule).
+                n = int(legacy.group(5))
                 add("listing", str(n), f"files from step {n}")
-                target = legacy.group(1)
-                if producing and target not in produced:
-                    produced.append(target)
-                elif not producing:
-                    add("file", target, target)
+                target = next((g for g in legacy.groups()[:4]
+                               if g is not None), None)
+                if target:
+                    if producing and target not in produced:
+                        produced.append(target)
+                    elif not producing:
+                        add("file", target, target)
                 continue
             # Step references in a non-covers Then still consume the
             # referenced step's stored output.

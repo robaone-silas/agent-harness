@@ -183,6 +183,49 @@ def t_legacy_covers_source_not_a_listing():
           hits[0].step_id == 2, str(hits[0].step_id))
 
 
+def t_legacy_covers_target_grammar_variants():
+    # The retired verifier's target grammar: an optional "the file"
+    # prefix, then a double-quoted, single-quoted, backticked, or
+    # bare path, with an optional contents-of subject form. Every
+    # variant keeps the listing edge and registers its target.
+    variants = [
+        "'audit-index.md' covers the files from step 1",
+        "`audit-index.md` covers the files from step 1",
+        "audit-index.md covers the files from step 1",
+        "the file audit-index.md covers the files from step 1",
+        'the contents of "audit-index.md" cover the files from step 1',
+        "contents of audit-index.md covers the files listed by step 1",
+    ]
+    for clause in variants:
+        steps = [PlanStep(id=1,
+                          instruction="I list the files in the workspace",
+                          done_when="the output lists the files"),
+                 PlanStep(id=2, instruction="I write audit-index.md",
+                          done_when=clause)]
+        g = graphcheck.build_graph(PRIYA_TASK, steps)
+        n2 = g.nodes[1]
+        check(f"legacy variant consumes the listing: {clause[:34]}",
+              "files from step 1" in n2.inputs, str(n2.inputs))
+        check(f"legacy variant registers its target: {clause[:34]}",
+              "audit-index.md" in n2.outputs, str(n2.outputs))
+        fs = graphcheck.check_plan(PRIYA_TASK, steps)
+        check(f"legacy variant from a listing step: no findings: "
+              f"{clause[:34]}", fs == [],
+              f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_legacy_covers_bare_target_source_not_a_listing():
+    steps = [PlanStep(id=1, instruction="I read values.csv carefully",
+                      done_when='"values.csv" exists'),
+             PlanStep(id=2, instruction="I write report.md",
+                      done_when="contents of report.md covers the "
+                                "files listed by step 1")]
+    fs = graphcheck.check_plan(PRIYA_TASK, steps)
+    hits = _by_code(fs, "covers_source_not_a_listing")
+    check("bare contents-of covers from a non-listing step fires once",
+          len(hits) == 1, f"{[(f.code, f.detail) for f in fs]}")
+
+
 def t_unsatisfied_input_workspace_aware():
     steps = [PlanStep(id=1, instruction="I read missing-data.csv and write summary.md",
                       done_when='"summary.md" exists')]

@@ -32,10 +32,12 @@ Checks:
                      target (field, issue #5: Priya's
                      `"audit-index.md" contains an entry for "<file>"`
                      times six). Completeness expressed that way
-                     matches no verifier and rests entirely on trust;
-                     one indexes clause (the step reads the files) or
-                     accounts_for clause (filenames alone) is the
-                     machine-checkable form.
+                     matches no verifier and rests entirely on trust.
+                     The feedback names the one-clause forms and when
+                     each applies: accounts_for for filenames alone,
+                     indexes for generic filename and description
+                     entries, and a prose Then stating the entry
+                     contract when entries must carry specific content.
   unaccounted_file   (WARN, workspace-aware): under narrow exhaustive
                      cues (a list, inventory, index, or catalogue task,
                      or all/every/each of the files), a workspace root
@@ -231,9 +233,13 @@ def _per_item_finding(step_id: int, listing_id: int,
     Fires when a deliverable step checks one target with at least two
     unmatched per-item containment clauses and carries no indexes or
     accounts_for clause for that target. The detail is the retry
-    feedback, so it names the replacement clauses the planner should
-    write: indexes when the step reads the files, accounts_for when
-    it works from the filenames alone."""
+    feedback, so it names the one-clause replacements and when each
+    applies: accounts_for when the step works from the filenames
+    alone, indexes when the entries are generic filename and
+    description entries, and one prose Then stating the entry
+    contract when each entry must carry specific content from the
+    files (a title, a summary of its argument, a measured value),
+    which the generic index cannot promise."""
     for target, count in per_item.items():
         if count >= 2 and target not in completeness_targets:
             return LintFinding(
@@ -242,10 +248,16 @@ def _per_item_finding(step_id: int, listing_id: int,
                 f"\"{target}\" one file at a time, but none of them "
                 f"matches a verifier, so completeness would be taken "
                 f"on trust. Replace those per-item clauses with one "
-                f"clause: \"{target}\" indexes the files from step "
-                f"{listing_id} if the step reads the files, or "
+                f"clause that answers for the whole listing: "
                 f"\"{target}\" accounts for the files from step "
-                f"{listing_id} if it works from the filenames alone.")
+                f"{listing_id} if the step works from the filenames "
+                f"alone; \"{target}\" indexes the files from step "
+                f"{listing_id} if the entries are generic filename "
+                f"and description entries; or, if each entry must "
+                f"carry specific content from the files (a title, a "
+                f"summary of its argument, a measured value), one "
+                f"prose Then stating that contract for every file "
+                f"from step {listing_id}.")
     return None
 
 

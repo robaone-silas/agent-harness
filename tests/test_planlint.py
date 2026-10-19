@@ -238,6 +238,12 @@ def t_per_item_clauses_error_with_living_replacements():
     check("feedback names the accounts_for alternative",
           '"audit-index.md" accounts for the files from step 1'
           in hits[0].detail, hits[0].detail)
+    check("feedback scopes indexes to generic entries",
+          "generic filename and description entries" in hits[0].detail,
+          hits[0].detail)
+    check("feedback offers the prose route for content-specific entries",
+          "one prose Then" in hits[0].detail
+          and "specific content" in hits[0].detail, hits[0].detail)
 
 
 def t_per_item_suppressed_by_completeness_clause():

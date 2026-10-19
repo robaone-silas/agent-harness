@@ -704,6 +704,68 @@ def _named_file(then: str) -> str | None:
     return None
 
 
+_LEADING_QUOTED = re.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
+                             re.IGNORECASE)
+
+
+def absence_intent(clause: str) -> bool:
+    """True when the clause wants its named file NOT there, so a
+    missing file is the success state, never a gap. This is the
+    exemption the existence floor and the deliverable audit apply;
+    lint applies it too, so the layers agree on absence clauses.
+
+    A parsed clause's verb decides: only not_exists expresses
+    absence, so a contains value that happens to be an absence word
+    ("result.txt" contains "removed") is not absence intent. The
+    prose pattern applies to unparsed clauses only. A recognized
+    retired covers clause is never absence intent, as at the
+    floor: it promises its target exists."""
+    parsed = parse_then(clause or "")
+    if parsed is not None:
+        return parsed[0] == "not_exists"
+    if _legacy_covers_target(clause or "") is not None:
+        return False
+    return bool(_ABSENCE_INTENT.search(clause or ""))
+
+
+_PRESERVATION_INTENT = re.compile(
+    r"unchanged|unmodified|untouched|not\s+modified|not\s+changed|"
+    r"remains?\s+as\s+it\s+was|stays?\s+the\s+same",
+    re.IGNORECASE)
+
+
+def preservation_intent(clause: str) -> bool:
+    """True when an unparsed clause asserts its named file is left
+    as it was ("source.txt" remains unchanged): the file is a
+    constraint on the step, never its output. Parsed clauses are
+    governed by their verb; a preserves clause's subject is a
+    deliverable the step writes, not a file it must leave alone."""
+    if parse_then(clause or "") is not None:
+        return False
+    return bool(_PRESERVATION_INTENT.search(clause or ""))
+
+
+def then_subject_file(clause: str) -> str | None:
+    """The file a Then clause is about: its subject.
+
+    A parsed clause's subject is its verifier's target. A prose
+    clause's subject is a quoted, path-shaped name in subject
+    position, at the clause's start (`"urgent-gear.txt" contains a
+    list of ...`); a file merely mentioned later in the clause (a
+    listing Then enumerating the files it found) is not the
+    subject, and neither is quoted prose. Pure phrasing; never
+    touches the workspace. Issue #48: lint and the executor both
+    keyed only on parsed clauses, so a deliverable named only in
+    a prose Then was invisible to both."""
+    clause = (clause or "").strip()
+    parsed = parse_then(clause)
+    if parsed is not None:
+        return parsed[1]
+    if not _LEADING_QUOTED.match(clause):
+        return None
+    return _named_file(clause)
+
+
 def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     """The attestation fallback, with the issue #22 existence floor.
 

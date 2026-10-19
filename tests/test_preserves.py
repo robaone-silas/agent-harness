@@ -19,6 +19,7 @@ Run: python3 tests/test_preserves.py
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -146,6 +147,100 @@ def t_field_loss_fails_and_names_missing_values():
                        "waiting on a replacement keybed part"):
             check(f"failure names {needle!r}", needle in c.detail,
                   c.detail)
+
+
+def t_refs_in_single_plural_and_oxford_comma():
+    check("single plural reference parses",
+          verify._refs_in("steps 2") == [2],
+          str(verify._refs_in("steps 2")))
+    check("single plural reference parses inside a clause tail",
+          verify._refs_in("from steps 2") == [2],
+          str(verify._refs_in("from steps 2")))
+    check("Oxford comma list keeps its last member",
+          verify._refs_in("steps 1, 2, and 3") == [1, 2, 3],
+          str(verify._refs_in("steps 1, 2, and 3")))
+
+
+def t_refs_in_existing_forms_unchanged():
+    for text, want in (("step 2", [2]),
+                       ("steps 1 and 2", [1, 2]),
+                       ("steps 2 through 4", [2, 3, 4]),
+                       ("steps 1, 2, 3", [1, 2, 3])):
+        check(f"existing form still parses: {text}",
+              verify._refs_in(text) == want,
+              str(verify._refs_in(text)))
+
+
+def t_refs_in_oxford_list_mixed_with_range():
+    check("Oxford list then range keeps the range whole",
+          verify._refs_in("steps 1, 2, and 4 through 6")
+          == [1, 2, 4, 5, 6],
+          str(verify._refs_in("steps 1, 2, and 4 through 6")))
+    check("list item after a range is not swept into it",
+          verify._refs_in("steps 1, 2, and 4 through 6 and 8")
+          == [1, 2, 4, 5, 6, 8],
+          str(verify._refs_in("steps 1, 2, and 4 through 6 and 8")))
+    check("range then Oxford list keeps both shapes",
+          verify._refs_in("steps 1 through 3, and 5") == [1, 2, 3, 5],
+          str(verify._refs_in("steps 1 through 3, and 5")))
+    check("dash range inside an Oxford list expands",
+          verify._refs_in("steps 1, 2, and 4-6") == [1, 2, 4, 5, 6],
+          str(verify._refs_in("steps 1, 2, and 4-6")))
+
+
+def t_refs_in_repetitive_tail_does_not_stall():
+    # A malformed clause tail with many separators and no number after
+    # them must fail fast. With whitespace on both sides of each
+    # separator in the segment pattern, adjacent repetitions split the
+    # same spaces between them and the parse backtracks exponentially
+    # (about 5 seconds for these strings on the unfixed pattern).
+    for tail in ("steps 2 " + "and " * 24 + "earlier work",
+                 "steps 2" + ", " * 24 + "end"):
+        start = time.perf_counter()
+        got = verify._refs_in(tail)
+        elapsed = time.perf_counter() - start
+        check(f"repetitive tail parses promptly: {tail[:16]!r}",
+              got == [2] and elapsed < 2.0,
+              f"{got} in {elapsed:.2f}s")
+
+
+def t_single_plural_step_reference_actually_checks():
+    step2 = ("# Step 2 record\n#### read_file {\"path\": \"extra.txt\"}\n"
+             "Result:\nCustomer: Dana Lee. Item: Shure microphone. "
+             "Status: checked and packed.\n")
+    clause = ('"work_list.txt" preserves customer, item, and status '
+              'from steps 2')
+    good = ("Work list\nCustomer: Dana Lee. Item: Shure microphone. "
+            "Status: checked and packed.\n")
+    bad = ("Work list\nCustomer: Dana Lee. Item: Shure microphone.\n")
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, good, clause, step2)
+        check("single plural reference passes a complete deliverable",
+              c.verifier == "preserves" and c.ok, c.detail)
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, bad, clause, step2)
+        check("single plural reference fails a deliverable that "
+              "drops a value from steps 2",
+              c.verifier == "preserves" and not c.ok
+              and "checked and packed" in c.detail, c.detail)
+
+
+def t_not_checked_detail_names_the_failed_side():
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, GOOD_LIST,
+                 '"work_list.txt" preserves customer and status '
+                 'from the earlier work')
+        check("fields but no references: detail names the references",
+              c.verifier == "preserves" and c.ok
+              and "no source steps" in c.detail
+              and "no fields" not in c.detail, c.detail)
+    with tempfile.TemporaryDirectory() as tmp:
+        c = _one(tmp, GOOD_LIST,
+                 '"work_list.txt" preserves 123 from step 1')
+        check("references but no fields: detail names the fields",
+              c.verifier == "preserves" and c.ok
+              and "no fields" in c.detail
+              and "no source steps" not in c.detail, c.detail)
 
 
 def t_plural_and_range_refs_harvest_every_named_step():

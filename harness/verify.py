@@ -670,6 +670,18 @@ _ABSENCE_INTENT = re.compile(
     r"\babsent\b|\bremoved\b|\bdeleted\b", re.IGNORECASE)
 
 
+def _legacy_covers_target(then: str) -> str | None:
+    """The target of a retired covers clause, or None when the
+    clause is not one. A covers clause is a positive existence
+    promise by construction: its target is the deliverable,
+    whatever words the filename itself contains."""
+    m = _COVERS_CLAUSE.match(then or "")
+    if not m:
+        return None
+    name = _pick(*m.groups())
+    return name.strip() if name else None
+
+
 def _named_file(then: str) -> str | None:
     """The workspace file a Then clause names, when it names one in
     quotes and the quoted text is path-shaped (no whitespace, and
@@ -677,10 +689,9 @@ def _named_file(then: str) -> str | None:
     a quoted phrase) is not a file. A retired covers clause also
     names its target, in the grammar above, quoted or bare. Pure
     phrasing; never touches the workspace."""
-    legacy = _COVERS_CLAUSE.match(then or "")
-    if legacy:
-        name = _pick(*legacy.groups())
-        return name.strip() if name else None
+    legacy = _legacy_covers_target(then)
+    if legacy is not None:
+        return legacy
     m = _QUOTED.search(then or "")
     if not m:
         return None
@@ -703,9 +714,13 @@ def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     clause naming a quoted file cannot pass on trust while that
     file is missing. The failure feeds the step's normal retry with
     the exact missing path. Absence-intent clauses are exempt:
-    there the missing file is the success state."""
+    there the missing file is the success state. A recognized
+    retired covers clause is never absence intent: it promises
+    its target exists, even when the filename itself contains an
+    absence word."""
     named = _named_file(then)
-    if named and not _ABSENCE_INTENT.search(then):
+    if named and (_legacy_covers_target(then) is not None
+                  or not _ABSENCE_INTENT.search(then)):
         p, err = _resolve(ctx, named)
         if not err and p is not None and not p.exists():
             return CheckResult(
@@ -722,9 +737,11 @@ def promised_deliverables(steps) -> list[str]:
     """The files a plan promises will exist when the run ends: the
     subject file of every exists / covers / indexes / contains-family
     Then, plus any quoted file a prose Then names, minus anything a
-    not_exists (or absence-intent) Then names. Derived from the
-    Thens alone, sorted for determinism. Issue #22: this set is the
-    run's contract with the user, audited at the end of the run."""
+    not_exists (or absence-intent) Then names. A retired covers
+    clause counts as a positive promise, never absence intent.
+    Derived from the Thens alone, sorted for determinism. Issue
+    #22: this set is the run's contract with the user, audited at
+    the end of the run."""
     promised: list[str] = []
     excluded: set[str] = set()
     for s in steps:
@@ -745,7 +762,8 @@ def promised_deliverables(steps) -> list[str]:
             named = _named_file(clause)
             if named is None:
                 continue
-            if _ABSENCE_INTENT.search(clause):
+            if (_legacy_covers_target(clause) is None
+                    and _ABSENCE_INTENT.search(clause)):
                 excluded.add(named)
             elif named not in promised:
                 promised.append(named)

@@ -297,6 +297,37 @@ def t_covers_bare_target_is_promised():
               str(verify.promised_deliverables(steps)))
 
 
+def t_covers_absence_word_in_target_still_promises():
+    # A covers clause is a positive existence promise by
+    # construction, even when the filename itself contains an
+    # absence word: the absence-intent scan reads the whole clause,
+    # so "deleted-files.md" must not exempt the clause from the
+    # floor or exclude it from the deliverable audit. A genuine
+    # absence-intent prose Then stays exempt (control).
+    cfg, d = make_cfg()
+    ctx = ctx_for(d)
+    for clause in ['"deleted-files.md" covers the files from step 1',
+                   'deleted-files.md covers the files from step 1']:
+        r = verify.verify_step([clause], ctx)
+        check(f"absence word in target still floors: {clause[:34]}",
+              not r.ok and r.checks[0].verifier == "attest"
+              and "deleted-files.md" in r.checks[0].detail,
+              f"{r.checks[0].verifier} {r.checks[0].detail}")
+    from harness.planner import PlanStep
+    steps = [PlanStep(id=1, instruction="I list the files",
+                      done_when="the output lists the files"),
+             PlanStep(id=2, instruction="I write deleted-files.md",
+                      done_when='"deleted-files.md" covers the files '
+                                'from step 1')]
+    check("absence word in target stays promised",
+          verify.promised_deliverables(steps) == ["deleted-files.md"],
+          str(verify.promised_deliverables(steps)))
+    r = verify.verify_step(['"draft.md" is removed'], ctx)
+    check("genuine absence prose still attests",
+          r.ok and r.checks[0].verifier == "attest",
+          r.checks[0].detail)
+
+
 if __name__ == "__main__":
     for fn in [t_exists, t_contains, t_contains_exactly, t_has_lines,
                t_not_exists_and_attest, t_prose_not_literal,
@@ -305,6 +336,7 @@ if __name__ == "__main__":
                t_attest_passes_through,
                t_covers_clause_falls_to_attestation,
                t_covers_bare_target_floors_attestation,
-               t_covers_bare_target_is_promised]:
+               t_covers_bare_target_is_promised,
+               t_covers_absence_word_in_target_still_promises]:
         fn()
     print("\nAll verify tests passed.")

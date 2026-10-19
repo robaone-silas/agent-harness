@@ -107,7 +107,7 @@ Feature: Reading guide
   Scenario: Step 2 - Write the guide
     Intent: each entry gives the article's title and a one-sentence summary of its argument, not the article text
     When I read each article from step 1 and write guide.md with one entry per article
-    Then "guide.md" covers the files from step 1
+    Then "guide.md" has one entry for each article from step 1, and each entry gives the article's title and a one-sentence summary of its argument
 
 Task: Build a catalog of the songs in this folder, one entry per song with its length
 Feature: Song catalog
@@ -124,7 +124,7 @@ Feature: Song catalog
   Scenario: Step 4 - Write the catalog
     Intent: one entry per song with its length, covering every song from step 1
     When I write catalog.md with one entry per song from the notes in steps 2 and 3
-    Then "catalog.md" covers the files from step 1
+    Then "catalog.md" has one entry for each song from step 1, with its length as noted in steps 2 and 3
 
 Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
 Feature: Quarterly total
@@ -144,11 +144,13 @@ Feature: Seed packet inventory
   Scenario: Step 2 - Write the inventory
     Intent: each entry names the plant and what it is for, in a file the user can keep
     When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
-    Then "seed-inventory.txt" indexes the files from step 1
+    Then "seed-inventory.txt" has one entry for each packet from step 1, naming the plant and what it is for
 
 In the catalog example, note the shape: the per-item steps only gather,
-and the final step carries the covers check against the listing step.
-Splitting the work across steps never splits away the completeness check.
+and the final step still answers for every song from step 1 in a
+single clause. Splitting the work across steps
+never splits away the completeness obligation, and the obligation is
+never scattered into one clause per file.
 
 """
 
@@ -194,28 +196,25 @@ Rules:
   `"path" exists`, `"path" contains "text"`, `"path" contains exactly "text"`,
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
-- When a step writes a document derived from an earlier step's file listing
-  (a summary, strategy, or report about those files), write its Then as
-  `"out.txt" covers the files from step N` (N = the listing step) — the
-  harness checks the document actually mentions the source files.
 - When a step writes about a listing from the filenames ALONE, without
   reading the files' contents (a strategy, triage, or sorting plan,
   often because the task forbids reading contents), write its Then as
-  `"out.txt" accounts for the files from step N` instead. The check
-  is strict: every filename from the listing must appear in the
-  document, so no file can be silently skipped.
-- Do not substitute one `contains` Then per source file for `covers` on
-  a document derived from a listing. Per-file clauses cannot prove the
-  document covers the listing; use the single `covers` clause instead.
+  `"out.txt" accounts for the files from step N` (N = the listing
+  step). The check is strict: every filename from the listing must
+  appear in the document, so no file can be silently skipped.
 - When a step's whole job is to read every file from an earlier listing
   step and compile an index, inventory, or catalog with a short
   description of each file, write its Then as
-  `"out.txt" indexes the files from step N` instead of `covers`. For an
+  `"out.txt" indexes the files from step N`. For an
   `indexes` step the harness builds that file itself: it reads each
   listed file, gets a one-line description of each, and writes the
-  target with one entry per file, so no file can be omitted. Use
-  `covers` when the step itself writes a document derived from a
-  listing in some other way.
+  target with one entry per file, so no file can be omitted. Those
+  descriptions are the harness's own generic one-liners. When each
+  entry must carry specific content from the files (a title, a
+  summary of its argument, a measured length), a generic description
+  cannot promise it: keep the writing with the step itself and state
+  that contract in a prose Then instead, as the reading guide
+  example does.
 - When a step compiles records that earlier steps READ (not listed)
   into a deliverable, and the fields each record must contribute
   matter (the task names them: a customer, an item, a status), write
@@ -391,6 +390,60 @@ def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
     return max(base, min(ceiling, ops + _BUDGET_SLACK))
 
 
+_PLAN_SHAPE_FEEDBACK = (
+    "A plan contains only Feature, Scenario, Intent, and Given/When/Then "
+    "lines. Notes and findings are background for writing steps, never "
+    "lines in the plan.\n"
+    "Shape:\n"
+    "  Feature: <name>\n"
+    "    Scenario: Step 1 - <goal>\n"
+    "      When I <action>\n"
+    "      Then <checkable result>"
+)
+
+
+def _normalize_for_matching(text: str) -> str:
+    """Collapse whitespace and case so two texts can be compared
+    without formatting differences getting in the way."""
+    return " ".join((text or "").split()).lower()
+
+
+def _parse_feedback(parse_error: str, response: str,
+                    discovery_notes: str = "") -> str:
+    """The full rejection message for a plan that fails Gherkin parse.
+
+    The parser's error names the symptom; the retry stands a better
+    chance when the message also teaches at the failure point: the
+    grammar in one sentence, a skeleton to copy, and, when the
+    offending line was pasted out of the discovery notes (Tomas's
+    2026-10-08 yard inventory: a findings bullet sitting where a
+    step belonged, and the same mistake on the retry), that
+    confusion named directly.
+    """
+    import re
+    message_parts = [f"That plan was rejected: {parse_error}."]
+    line_match = re.search(r"line (\d+)", parse_error or "")
+    if line_match and discovery_notes:
+        # The parser numbers lines in the fence-stripped text, so
+        # read the offending line from that same text: indexing the
+        # raw response lands one line early whenever the model
+        # wrapped its plan in a Markdown fence.
+        plan_lines = gherkin._strip_fences(response or "").splitlines()
+        line_number = int(line_match.group(1))
+        if 1 <= line_number <= len(plan_lines):
+            offending_line = _normalize_for_matching(
+                plan_lines[line_number - 1])
+            if offending_line and offending_line in \
+                    _normalize_for_matching(discovery_notes):
+                message_parts.append(
+                    "That line came from the discovery notes; "
+                    "do not paste findings into the plan.")
+    message_parts.append(_PLAN_SHAPE_FEEDBACK)
+    message_parts.append(
+        "Return ONLY the corrected Gherkin, no other text.")
+    return "\n".join(message_parts)
+
+
 def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
                  discovery: str = ""
                  ) -> tuple[str | None, list[PlanStep] | str]:
@@ -414,7 +467,7 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
         content = (msg.get("content") or "").strip()
         plan, err = gherkin.parse_feature(content)
         if plan is None:
-            feedback = f"That plan was rejected: {err}."
+            feedback = _parse_feedback(err, content, discovery)
             last_problem = err
         else:
             steps = to_plan_steps(plan)
@@ -430,11 +483,12 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
             if not errors or attempt == 2:
                 return content, steps
             feedback = ("That plan has design flaws: "
-                        + "; ".join(f.detail for f in errors) + ".")
+                        + "; ".join(f.detail for f in errors)
+                        + ". Return ONLY the corrected Gherkin, "
+                        "no other text.")
             last_problem = "; ".join(f.detail for f in errors)
         messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content":
-                         feedback + " Return ONLY the corrected Gherkin, no other text."})
+        messages.append({"role": "user", "content": feedback})
     return None, last_problem
 
 
@@ -562,8 +616,7 @@ def request_discovery_plan(task: str, cfg: Config, chat_fn
         last_problem = err
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content":
-                         f"That plan was rejected: {err}. "
-                         "Return ONLY the corrected Gherkin, no other text."})
+                         _parse_feedback(err, content)})
     return None, last_problem
 
 
@@ -961,17 +1014,29 @@ def _then_named_outputs(step: PlanStep) -> list[str]:
     executor prompt and the blocked-write feedback both name these
     files explicitly, so the gap is bridged even when a plan that
     carries it reaches execution. Absence clauses name no output:
-    the file they name is meant to be gone, not written."""
+    the file they name is meant to be gone, not written. Neither
+    does a preservation clause: the file it names is meant to be
+    left exactly as it was. "Named in the When" is judged on the
+    When's extracted file mentions and its mv/cp destinations, not
+    on substring matching: a destination like archive/<name> is
+    named by the move even though the joined path never appears
+    literally, and an output whose name sits inside a longer source
+    name is not named at all."""
+    from . import planlint as _planlint
     from . import verify as _verify
-    out: list[str] = []
-    for t in (step.done_when or "").split("\n"):
-        t = t.strip()
-        if not t or _verify.absence_intent(t):
+    named_in_when = _planlint._mentions(step.instruction or "") \
+        | _planlint._move_destinations(step.instruction or "")
+    outputs: list[str] = []
+    for clause in (step.done_when or "").split("\n"):
+        clause = clause.strip()
+        if not clause or _verify.absence_intent(clause) \
+                or _verify.preservation_intent(clause):
             continue
-        f = _verify.then_subject_file(t)
-        if f and f not in (step.instruction or "") and f not in out:
-            out.append(f)
-    return out
+        subject_file = _verify.then_subject_file(clause)
+        if subject_file and subject_file not in named_in_when \
+                and subject_file not in outputs:
+            outputs.append(subject_file)
+    return outputs
 
 
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
@@ -1015,7 +1080,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         existence pass: the stub that founded stage 2 satisfied
         `"file" exists` while promising its content "to be filled in".
         The checks that answer stage 2's suspicion measure content:
-        contains, contains_exactly, covers (against the source items),
+        contains, contains_exactly, indexes (against the source items),
         has_lines. See _grounding_gate."""
         if not thens:
             return False
@@ -1024,8 +1089,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "covers", "indexes", "accounts_for",
-                                  "has_lines")
+                                  "indexes", "accounts_for", "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)

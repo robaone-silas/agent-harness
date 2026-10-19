@@ -237,11 +237,106 @@ def t_prose_not_literal():
     shutil.rmtree(d)
 
 
+def t_covers_clause_falls_to_attestation():
+    # The covers verb is removed: its clause shape parses to no
+    # verifier, so a saved plan carrying one is taken on trust,
+    # subject to the existence floor like any prose Then. The living
+    # completeness verbs still parse.
+    check("covers clause parses to no verifier",
+          verify.parse_then('"guide.md" covers the files from step 1')
+          is None)
+    check("indexes clause still parses",
+          (verify.parse_then('"guide.md" indexes the files from step 1')
+           or (None,))[0] == "indexes")
+    check("accounts_for clause still parses",
+          (verify.parse_then('"guide.md" accounts for the files '
+                             'from step 1')
+           or (None,))[0] == "accounts_for")
+
+
+def t_covers_bare_target_floors_attestation():
+    # A saved covers clause in a bare written form names no quoted
+    # span, so the plain quoted-file extraction misses its target.
+    # The target grammar is preserved for the fallback extractor:
+    # the existence floor still refuses attestation while the named
+    # file is missing, in every form the retired verifier accepted.
+    cfg, d = make_cfg()
+    ctx = ctx_for(d)
+    variants = [
+        "guide.md covers the files from step 1",
+        "contents of guide.md covers the files listed by step 1",
+        "the file guide.md covers the files from step 1",
+    ]
+    for clause in variants:
+        r = verify.verify_step([clause], ctx)
+        check(f"bare covers variant floors while missing: "
+              f"{clause[:34]}",
+              not r.ok and r.checks[0].verifier == "attest"
+              and "guide.md" in r.checks[0].detail,
+              f"{r.checks[0].verifier} {r.checks[0].detail}")
+    Path(d, "guide.md").write_text("g")
+    r = verify.verify_step([variants[0]], ctx)
+    check("bare covers variant attests once the file exists",
+          r.ok and r.checks[0].verifier == "attest",
+          r.checks[0].detail)
+
+
+def t_covers_bare_target_is_promised():
+    # The end-of-run audit reads the same extractor, so a bare or
+    # contents-of covers target is a promised deliverable too.
+    from harness.planner import PlanStep
+    for clause in ["guide.md covers the files from step 1",
+                   "contents of guide.md covers the files listed "
+                   "by step 1"]:
+        steps = [PlanStep(id=1, instruction="I list the files",
+                          done_when="the output lists the files"),
+                 PlanStep(id=2, instruction="I write guide.md",
+                          done_when=clause)]
+        check(f"bare covers target is promised: {clause[:34]}",
+              verify.promised_deliverables(steps) == ["guide.md"],
+              str(verify.promised_deliverables(steps)))
+
+
+def t_covers_absence_word_in_target_still_promises():
+    # A covers clause is a positive existence promise by
+    # construction, even when the filename itself contains an
+    # absence word: the absence-intent scan reads the whole clause,
+    # so "deleted-files.md" must not exempt the clause from the
+    # floor or exclude it from the deliverable audit. A genuine
+    # absence-intent prose Then stays exempt (control).
+    cfg, d = make_cfg()
+    ctx = ctx_for(d)
+    for clause in ['"deleted-files.md" covers the files from step 1',
+                   'deleted-files.md covers the files from step 1']:
+        r = verify.verify_step([clause], ctx)
+        check(f"absence word in target still floors: {clause[:34]}",
+              not r.ok and r.checks[0].verifier == "attest"
+              and "deleted-files.md" in r.checks[0].detail,
+              f"{r.checks[0].verifier} {r.checks[0].detail}")
+    from harness.planner import PlanStep
+    steps = [PlanStep(id=1, instruction="I list the files",
+                      done_when="the output lists the files"),
+             PlanStep(id=2, instruction="I write deleted-files.md",
+                      done_when='"deleted-files.md" covers the files '
+                                'from step 1')]
+    check("absence word in target stays promised",
+          verify.promised_deliverables(steps) == ["deleted-files.md"],
+          str(verify.promised_deliverables(steps)))
+    r = verify.verify_step(['"draft.md" is removed'], ctx)
+    check("genuine absence prose still attests",
+          r.ok and r.checks[0].verifier == "attest",
+          r.checks[0].detail)
+
+
 if __name__ == "__main__":
     for fn in [t_exists, t_contains, t_contains_exactly, t_has_lines,
                t_not_exists_and_attest, t_prose_not_literal,
                t_verify_retry_integration,
                t_verify_exhausted, t_subrun_failure_still_hard,
-               t_attest_passes_through]:
+               t_attest_passes_through,
+               t_covers_clause_falls_to_attestation,
+               t_covers_bare_target_floors_attestation,
+               t_covers_bare_target_is_promised,
+               t_covers_absence_word_in_target_still_promises]:
         fn()
     print("\nAll verify tests passed.")

@@ -2,7 +2,7 @@
 """Tests for comprehensive plan-shape exemplars (issue #5, variant shape).
 
 Field failure, 2026-10-04 closing replay: the planner split Priya's index
-into seven per-file steps with no covers check anywhere. The completeness
+into seven per-file steps with no completeness check anywhere. The completeness
 dodge from issue #5 survived by changing shape: PR #10's lint rule sees
 per-item clauses concentrated in one step, not spread across steps. The
 prompt's example shelf taught only three shapes, two of them the same
@@ -11,7 +11,7 @@ the model improvised the split and the completeness check was split away
 with the work. Ansel's call: fill the knowledge gap with more
 comprehensive examples of plan shapes. These tests pin the expanded
 shelf: every exemplar parses as a real plan, a per-item shape whose
-final step still carries covers against the listing step, a
+final step still carries indexes against the listing step, a
 read-and-compute shape, and an inventory shape that turns a vague ask
 into a named durable deliverable.
 
@@ -66,23 +66,30 @@ def t_every_exemplar_parses():
               len(steps) >= 2, str(len(steps)))
 
 
-def t_per_item_shape_keeps_covers_on_the_final_step():
+def t_per_item_shape_keeps_one_completeness_clause_on_the_final_step():
+    # The per-item exemplar's entries carry content the gather steps
+    # noted (each song's length), which the indexes primitive's
+    # generic descriptions cannot promise, so its final step carries
+    # one attested clause answering for the whole listing (Copilot
+    # review, PR #45). The shape lesson is unchanged: gathering may
+    # split across steps, the completeness clause may not.
     plans = example_plans()
     found = None
     for task_line, steps in plans:
         if len(steps) >= 4 and any(
-                "covers the files from step 1" in s.done_when
+                "has one entry for each song from step 1" in s.done_when
                 for s in steps[-1:]):
             found = (task_line, steps)
             break
-    check("a per-item exemplar exists (4+ steps, covers at the end)",
-          found is not None)
+    check("a per-item exemplar exists (4+ steps, one completeness "
+          "clause at the end)", found is not None)
     task_line, steps = found
     middle = steps[1:-1]
-    check("per-item middle steps gather without writing the deliverable",
-          all("covers" not in s.done_when for s in middle))
-    check("the final step is the one carrying covers",
-          "covers the files from step 1" in steps[-1].done_when,
+    check("per-item middle steps gather without the completeness clause",
+          all("has one entry for each song" not in s.done_when
+              for s in middle))
+    check("the final step is the one carrying the completeness clause",
+          "has one entry for each song from step 1" in steps[-1].done_when,
           steps[-1].done_when)
 
 
@@ -106,8 +113,8 @@ def t_inventory_shape_names_a_durable_deliverable():
             break
     check("an inventory exemplar exists", found is not None)
     last = found[-1]
-    check("inventory deliverable carries indexes",
-          "indexes the files from step 1" in last.done_when,
+    check("inventory deliverable carries its contract clause",
+          "has one entry for each packet from step 1" in last.done_when,
           last.done_when)
     check("inventory deliverable step carries an intent",
           bool(last.intent), last.instruction)
@@ -116,14 +123,14 @@ def t_inventory_shape_names_a_durable_deliverable():
 def t_lesson_note_present_in_prompt():
     p = planner.build_planner_prompt("index the files", ["list_dir"])
     check("prompt states the split lesson",
-          "never splits away the completeness check" in p)
+          "never splits away the completeness obligation" in p)
     check("per-item exemplar reaches the prompt", "catalog.md" in p)
     check("inventory exemplar reaches the prompt", "seed-inventory.txt" in p)
 
 
 def main():
     t_every_exemplar_parses()
-    t_per_item_shape_keeps_covers_on_the_final_step()
+    t_per_item_shape_keeps_one_completeness_clause_on_the_final_step()
     t_read_and_compute_shape_present()
     t_inventory_shape_names_a_durable_deliverable()
     t_lesson_note_present_in_prompt()

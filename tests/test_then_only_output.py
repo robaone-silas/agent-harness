@@ -155,6 +155,94 @@ def t_lint_quiet_for_absence_prose():
           str([f.as_dict() for f in findings]))
 
 
+# ------------------------------------- review round, 2026-10-19
+
+def t_preservation_clause_is_not_an_output():
+    # A Then asserting a source file stays as it was names a
+    # constraint, not a place to write: the executor must not be
+    # told to write its result into the preserved file, and lint
+    # must not advise naming it in the When as the step's output.
+    step = planner.PlanStep(
+        id=2,
+        instruction=("I read the sources from step 1 and write "
+                     "summary.txt"),
+        done_when='"source.txt" remains unchanged')
+    check("preservation clause names no output",
+          planner._then_named_outputs(step) == [],
+          str(planner._then_named_outputs(step)))
+    check("preservation intent reads the clause",
+          verify.preservation_intent('"source.txt" remains unchanged'))
+    check("a preserves clause is a deliverable, not preservation "
+          "intent",
+          not verify.preservation_intent(
+              '"repair-jobs.txt" preserves customer, item, and '
+              'status from steps 1 and 2'))
+    findings = planlint.lint_plan(TASK, [STEP1, step])
+    check("no dangling_file for a preservation prose Then",
+          not [f for f in _dangling(findings) if f.step_id == 2],
+          str([f.as_dict() for f in findings]))
+
+
+def t_absence_subject_is_not_a_deliverable_for_clarity():
+    # An absence clause's subject counts neither as an output nor
+    # as the plan's deliverable: a plan whose only file assertion
+    # is a removal still owes the deliverable_clarity warning.
+    step = planner.PlanStep(
+        id=1, instruction="I remove the scratch file",
+        done_when='"scratch.txt" has been removed from the workspace')
+    findings = planlint.lint_plan(
+        "Give me an inventory of the workspace files.", [step])
+    codes = [f.code for f in findings]
+    check("absence subject draws no dangling_file",
+          "dangling_file" not in codes, str(codes))
+    check("deliverable_clarity still fires without a real output",
+          "deliverable_clarity" in codes, str(codes))
+
+
+def t_move_destination_is_not_an_output():
+    # The archive shape the planner prompt itself teaches: the
+    # destination is computed from the mv command, not found by
+    # substring, and it is the move's result, not a file the step
+    # writes its result into.
+    step = planner.PlanStep(
+        id=3, instruction="I run: mv notes-2025-03.txt archive/",
+        done_when='"archive/notes-2025-03.txt" exists')
+    check("move destination names no output",
+          planner._then_named_outputs(step) == [],
+          str(planner._then_named_outputs(step)))
+
+
+def t_similar_source_name_does_not_hide_the_output():
+    # Substring matching hid the guidance here: the output's name
+    # sits inside the longer source name the When reads.
+    step = planner.PlanStep(
+        id=2,
+        instruction='I read "not-urgent-gear.txt" and summarize it',
+        done_when='"urgent-gear.txt" exists')
+    check("output hidden by a longer source name is still named",
+          planner._then_named_outputs(step) == ["urgent-gear.txt"],
+          str(planner._then_named_outputs(step)))
+
+
+def t_absence_intent_respects_parsed_verbs():
+    # The absence heuristic reads prose only: a parsed clause's
+    # verb decides, so a contains value that happens to be an
+    # absence word does not strip the clause's output guidance.
+    check("a contains value is not absence intent",
+          not verify.absence_intent('"result.txt" contains "removed"'))
+    check("not_exists is absence intent",
+          verify.absence_intent('"scratch.txt" does not exist'))
+    check("removal prose is absence intent",
+          verify.absence_intent(
+              '"scratch.txt" has been removed from the workspace'))
+    step = planner.PlanStep(
+        id=2, instruction="I compile the cleanup results",
+        done_when='"result.txt" contains "removed"')
+    check("the contains target keeps its output guidance",
+          planner._then_named_outputs(step) == ["result.txt"],
+          str(planner._then_named_outputs(step)))
+
+
 # ------------------------------------------------------ executor prompt
 
 def t_step_prompt_names_the_then_only_output_file():
@@ -329,4 +417,9 @@ if __name__ == "__main__":
     t_refusal_names_the_steps_output_file()
     t_no_hint_no_naming()
     t_step_recovers_from_blocked_write_via_hint()
+    t_preservation_clause_is_not_an_output()
+    t_absence_subject_is_not_a_deliverable_for_clarity()
+    t_move_destination_is_not_an_output()
+    t_similar_source_name_does_not_hide_the_output()
+    t_absence_intent_respects_parsed_verbs()
     print("ALL PASSED")

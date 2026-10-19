@@ -6,7 +6,7 @@ data-flow graph, nodes with declared input and output fields, edges
 where one node's output feeds another's input, and checks the graph's
 structure. A node can only succeed when it can produce what the next
 node needs, so at plan time that means: every consumed field has a
-producer, step references resolve to earlier nodes, and a covers
+producer, step references resolve to earlier nodes, and a listing
 clause draws its file list from a node that actually produces one.
 
 The checker is plan-time and structural. It cannot catch a runtime
@@ -31,7 +31,7 @@ PRIYA_TASK = (
 )
 
 # The shape the closing replay approved: list, then one read-and-write
-# step carrying the covers clause.
+# step carrying the indexes clause.
 HEALTHY_PLAN = """Feature: File Audit Index
   Scenario: Step 1 - List all files
     Intent: know exactly which files the audit index must cover
@@ -40,7 +40,7 @@ HEALTHY_PLAN = """Feature: File Audit Index
   Scenario: Step 2 - Read files and write the index
     Intent: create audit-index.md listing every file with a one-line description
     When I read every file from step 1 and write audit-index.md
-    Then "audit-index.md" covers the files from step 1
+    Then "audit-index.md" indexes the files from step 1
 """
 
 FILE_HANDOFF_PLAN = """Feature: Totals
@@ -129,19 +129,101 @@ def t_unresolved_step_reference():
           f"{[(f.code, f.detail) for f in hits2]}")
 
 
-def t_covers_source_not_a_listing():
+def t_listing_clause_source_not_a_listing():
+    steps = [PlanStep(id=1, instruction="I read values.csv carefully",
+                      done_when='"values.csv" exists'),
+             PlanStep(id=2, instruction="I write audit-index.md",
+                      done_when='"audit-index.md" indexes the files from step 1')]
+    fs = graphcheck.check_plan(PRIYA_TASK, steps)
+    hits = _by_code(fs, "covers_source_not_a_listing")
+    check("indexes from a non-listing step fires once", len(hits) == 1,
+          f"{[(f.code, f.detail) for f in fs]}")
+    check("listing source finding is an error", hits[0].level == "error",
+          hits[0].level)
+    check("listing source finding is on step 2", hits[0].step_id == 2,
+          str(hits[0].step_id))
+
+
+def t_legacy_covers_clause_keeps_its_listing_edge():
+    # A covers clause in a saved plan: the verb is no longer offered,
+    # so parse_then returns None for it, but the graph still
+    # understands the clause shape (see _COVERS_SOURCE in graphcheck):
+    # the clause consumes the listing step's files and its quoted
+    # target is the step's deliverable.
+    steps = [PlanStep(id=1, instruction="I list the files in the workspace",
+                      done_when="the output lists the files"),
+             PlanStep(id=2, instruction="I write audit-index.md",
+                      done_when='"audit-index.md" covers the files from step 1')]
+    g = graphcheck.build_graph(PRIYA_TASK, steps)
+    n2 = g.nodes[1]
+    check("legacy covers: compile node consumes the file list",
+          "files from step 1" in n2.inputs, str(n2.inputs))
+    check("legacy covers: compile node outputs the index",
+          "audit-index.md" in n2.outputs, str(n2.outputs))
+    edges = {(e.producer, e.consumer, e.field) for e in g.edges}
+    check("legacy covers: listing edge runs step 1 -> step 2",
+          (1, 2, "files from step 1") in edges, str(edges))
+    fs = graphcheck.check_plan(PRIYA_TASK, steps)
+    check("legacy covers from a listing step: no graph findings",
+          fs == [], f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_legacy_covers_source_not_a_listing():
     steps = [PlanStep(id=1, instruction="I read values.csv carefully",
                       done_when='"values.csv" exists'),
              PlanStep(id=2, instruction="I write audit-index.md",
                       done_when='"audit-index.md" covers the files from step 1')]
     fs = graphcheck.check_plan(PRIYA_TASK, steps)
     hits = _by_code(fs, "covers_source_not_a_listing")
-    check("covers from a non-listing step fires once", len(hits) == 1,
-          f"{[(f.code, f.detail) for f in fs]}")
-    check("covers source finding is an error", hits[0].level == "error",
-          hits[0].level)
-    check("covers source finding is on step 2", hits[0].step_id == 2,
-          str(hits[0].step_id))
+    check("legacy covers from a non-listing step fires once",
+          len(hits) == 1, f"{[(f.code, f.detail) for f in fs]}")
+    check("legacy covers source finding is an error",
+          hits[0].level == "error", hits[0].level)
+    check("legacy covers source finding is on step 2",
+          hits[0].step_id == 2, str(hits[0].step_id))
+
+
+def t_legacy_covers_target_grammar_variants():
+    # The retired verifier's target grammar: an optional "the file"
+    # prefix, then a double-quoted, single-quoted, backticked, or
+    # bare path, with an optional contents-of subject form. Every
+    # variant keeps the listing edge and registers its target.
+    variants = [
+        "'audit-index.md' covers the files from step 1",
+        "`audit-index.md` covers the files from step 1",
+        "audit-index.md covers the files from step 1",
+        "the file audit-index.md covers the files from step 1",
+        'the contents of "audit-index.md" cover the files from step 1',
+        "contents of audit-index.md covers the files listed by step 1",
+    ]
+    for clause in variants:
+        steps = [PlanStep(id=1,
+                          instruction="I list the files in the workspace",
+                          done_when="the output lists the files"),
+                 PlanStep(id=2, instruction="I write audit-index.md",
+                          done_when=clause)]
+        g = graphcheck.build_graph(PRIYA_TASK, steps)
+        n2 = g.nodes[1]
+        check(f"legacy variant consumes the listing: {clause[:34]}",
+              "files from step 1" in n2.inputs, str(n2.inputs))
+        check(f"legacy variant registers its target: {clause[:34]}",
+              "audit-index.md" in n2.outputs, str(n2.outputs))
+        fs = graphcheck.check_plan(PRIYA_TASK, steps)
+        check(f"legacy variant from a listing step: no findings: "
+              f"{clause[:34]}", fs == [],
+              f"{[(f.code, f.detail) for f in fs]}")
+
+
+def t_legacy_covers_bare_target_source_not_a_listing():
+    steps = [PlanStep(id=1, instruction="I read values.csv carefully",
+                      done_when='"values.csv" exists'),
+             PlanStep(id=2, instruction="I write report.md",
+                      done_when="contents of report.md covers the "
+                                "files listed by step 1")]
+    fs = graphcheck.check_plan(PRIYA_TASK, steps)
+    hits = _by_code(fs, "covers_source_not_a_listing")
+    check("bare contents-of covers from a non-listing step fires once",
+          len(hits) == 1, f"{[(f.code, f.detail) for f in fs]}")
 
 
 def t_unsatisfied_input_workspace_aware():

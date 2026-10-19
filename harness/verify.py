@@ -649,6 +649,20 @@ def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
 
 
 _QUOTED = re.compile(r'''"([^"]*)"|'([^']*)'|`([^`]*)`''')
+# A saved plan's covers clause: the verb is retired, so the clause
+# is never checked as covers, but it still names its deliverable.
+# This is the retired verifier's target grammar, kept so the
+# existence floor and the deliverable audit can read that name in
+# every written form, including the bare and contents-of forms that
+# contain no quoted span. (graphcheck keeps its own copy for the
+# approval graph.)
+_COVERS_CLAUSE = re.compile(
+    r"^\s*(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?"
+    r"(?:the\s+file\s+)?"
+    r"(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`|([\w./\\-]+))"
+    r"\s+covers?\s+the\s+files\s+"
+    r"(?:from|listed\s+(?:in|by))\s+step\s+\d+\s*[.!]?\s*$",
+    re.IGNORECASE)
 # Absence intent: the clause wants the named file NOT there, so a
 # missing file is the success state, never a floor failure.
 _ABSENCE_INTENT = re.compile(
@@ -660,8 +674,13 @@ def _named_file(then: str) -> str | None:
     """The workspace file a Then clause names, when it names one in
     quotes and the quoted text is path-shaped (no whitespace, and
     either a slash or a dotted extension). Quoted prose ("done",
-    a quoted phrase) is not a file. Pure phrasing; never touches
-    the workspace."""
+    a quoted phrase) is not a file. A retired covers clause also
+    names its target, in the grammar above, quoted or bare. Pure
+    phrasing; never touches the workspace."""
+    legacy = _COVERS_CLAUSE.match(then or "")
+    if legacy:
+        name = _pick(*legacy.groups())
+        return name.strip() if name else None
     m = _QUOTED.search(then or "")
     if not m:
         return None

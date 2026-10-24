@@ -248,9 +248,16 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
 # A step-reference phrase inside prose: singular, plural lists, and
 # ranges. Same grammar as planner._step_refs; verify.py cannot import
 # planner (planner imports verify), so the segment parser is local,
-# like graphcheck's and planlint's own reference patterns.
+# like graphcheck's and planlint's own reference patterns. A plural
+# head may carry a single number ("steps 2"), and separators may
+# repeat between numbers, so an Oxford comma list ("steps 1, 2, and
+# 3") parses whole instead of dropping its last member. The whitespace
+# before a separator run sits outside the repeated group: with a \s*
+# on both sides of each separator, adjacent repetitions can split the
+# same spaces between them and backtrack exponentially when the tail
+# never reaches a number.
 _PRES_SEG = re.compile(
-    r"\bsteps?\s+(\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)+)",
+    r"\bsteps?\s+(\d+(?:\s*(?:(?:,|and|through|to|[-–—])\s*)+\d+)*)",
     re.IGNORECASE)
 _PRES_TOKEN = re.compile(r"\d+|through|to|and|,|[-–—]", re.IGNORECASE)
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
@@ -260,17 +267,30 @@ def _refs_in(text: str) -> list[int]:
     refs = [int(n) for n in re.findall(r"\bstep\s+(\d+)", text or "",
                                        re.IGNORECASE)]
     for m in _PRES_SEG.finditer(text or ""):
-        toks = _PRES_TOKEN.findall(m.group(1))
-        nums = [t for t in toks if t.isdigit()]
-        seps = [t for t in toks if not t.isdigit()]
+        nums: list[int] = []
+        gaps: list[str] = []
+        pending: list[str] = []
+        for tok in _PRES_TOKEN.findall(m.group(1)):
+            if tok.isdigit():
+                if nums:
+                    # One connector per numeric gap: the last separator
+                    # spoken before the next number governs that gap,
+                    # so repeated separators (", and") cannot shift the
+                    # pairing between numbers and connectors. The token
+                    # walk in planner._step_refs pairs them the same way.
+                    gaps.append(pending[-1].strip().lower()
+                                if pending else "")
+                nums.append(int(tok))
+                pending = []
+            else:
+                pending.append(tok)
         for i, num in enumerate(nums):
-            if (i + 1 < len(nums) and i < len(seps)
-                    and seps[i].strip().lower() in _PRES_RANGE_SEPS):
-                a, b = int(num), int(nums[i + 1])
+            if (i + 1 < len(nums) and gaps[i] in _PRES_RANGE_SEPS):
+                a, b = num, nums[i + 1]
                 if 0 < abs(b - a) <= 64:
                     refs.extend(range(min(a, b), max(a, b) + 1))
                     continue
-            refs.append(int(num))
+            refs.append(num)
     seen: set[int] = set()
     out: list[int] = []
     for r in refs:
@@ -413,9 +433,16 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
     refs = [r for r in _refs_in(m.group(6)) if r != ctx.step_id]
     then = m.string.strip()
     if not fields or not refs:
-        return CheckResult(then, True, "preserves",
-                           "the clause names no fields or no source "
-                           "steps — preservation not checked")
+        if not fields and not refs:
+            detail = ("the clause names no fields and no source "
+                      "steps: preservation not checked")
+        elif not fields:
+            detail = ("the clause names no fields: "
+                      "preservation not checked")
+        else:
+            detail = ("the clause names no source steps: "
+                      "preservation not checked")
+        return CheckResult(then, True, "preserves", detail)
     p, err = _resolve(ctx, rel)
     if err:
         return CheckResult(then, False, "preserves", err)

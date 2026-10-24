@@ -57,7 +57,7 @@ def _extract_fallback(content: str) -> tuple[str, dict | None]:
 
 
 def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
-        only_tools=None) -> RunResult:
+        only_tools=None, refusal_hint=None) -> RunResult:
     """Run the agent loop. chat_fn(messages, tools) -> assistant message dict;
     inject a fake for tests. on_step(step) receives each Step for live display.
     done_gate(steps) -> str | None: consulted once before a DONE: is accepted;
@@ -66,6 +66,10 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
     only_tools: optional allowlist of tool names (v0.8.1 Tier 2 discovery
     runs read-only: the registry itself is restricted, so a step cannot
     write even if its instructions say to).
+    refusal_hint: optional text appended to a write tool's refusal
+    result (issue #48): a refused write is actionable only when the
+    feedback names where the work belongs, and only the caller (a
+    plan step) knows that; the loop itself stays step-agnostic.
 
     Budget accounting (v0.8.1): cfg.max_steps bounds the model's own
     turns. The harness's capped pushbacks (the done_gate, at most 2, and
@@ -211,6 +215,9 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
                         # Safety boundary, not a failure: the model is right
                         # to stop, so DONE: afterwards is accepted.
                         tool_result = f"ERROR: {e}"
+                        if refusal_hint and tool_name in (
+                                "write_file", "append_file", "edit_file"):
+                            tool_result += f"\n{refusal_hint}"
                         errors += 1
                         last_outcome = "refused"
                     except _tools.ToolError as e:

@@ -731,6 +731,112 @@ def _named_file(then: str) -> str | None:
     return None
 
 
+_LEADING_QUOTED = re.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
+                             re.IGNORECASE)
+
+
+_ABSENCE_PREDICATE = re.compile(
+    r"""(?:does|do)\s+not\s+exist\b"""
+    r"""|doesn't\s+exist\b"""
+    r"""|(?:should|shall)\s+not\s+exist\b"""
+    r"""|(?:is|was)\s+absent\b"""
+    r"""|no\s+longer\s+(?:exists|in)\b"""
+    r"""|(?:is|was)\s+no\s+longer\s+(?:there|present|available)\b"""
+    r"""|(?:has|have|had)\s+been\s+(?:removed|deleted)\b"""
+    r"""|(?:was|were|is|are)\s+(?:removed|deleted)\b""",
+    re.IGNORECASE)
+
+
+def absence_intent(clause: str) -> bool:
+    """True when the clause wants its named file NOT there, so a
+    missing file is the success state, never a gap. This is the
+    exemption the existence floor and the deliverable audit apply;
+    lint applies it too, so the layers agree on absence clauses.
+
+    A parsed clause's verb decides: only not_exists expresses
+    absence, so a contains value that happens to be an absence word
+    ("result.txt" contains "removed") is not absence intent. For
+    unparsed clauses the predicate must sit directly after the
+    subject's quoted name and be about the subject itself, exactly
+    as for preservation: a removal word inside the filename
+    ("deleted-records.txt") or inside the described contents
+    ("contains a list of removed records") is not a claim the file
+    is gone. A recognized retired covers clause is never absence
+    intent, as at the floor: it promises its target exists."""
+    parsed = parse_then(clause or "")
+    if parsed is not None:
+        return parsed[0] == "not_exists"
+    if _legacy_covers_target(clause or "") is not None:
+        return False
+    subject_match = _LEADING_SUBJECT.match(clause or "")
+    if subject_match is None:
+        return False
+    remainder = (clause or "")[subject_match.end():].strip()
+    return bool(_ABSENCE_PREDICATE.match(remainder))
+
+
+_LEADING_SUBJECT = re.compile(
+    r"""^\s*(?:the\s+file\s+)?""" + _QTEXT,
+    re.IGNORECASE)
+
+
+_PRESERVATION_PREDICATE = re.compile(
+    r"(?:remains?|stays?)\s+(?:unchanged|unmodified|untouched|"
+    r"as\s+it\s+was|the\s+same)\b"
+    r"|(?:is|was)\s+(?:unchanged|unmodified|untouched)\b"
+    r"|(?:is|was)\s+not\s+(?:modified|changed)\b"
+    r"|(?:is|was)\s+left\s+(?:unchanged|unmodified|untouched|"
+    r"as\s+it\s+was)\b"
+    r"|(?:has|have)\s+not\s+been\s+(?:modified|changed)\b"
+    r"|(?:does|do)\s+not\s+change\b",
+    re.IGNORECASE)
+
+
+def preservation_intent(clause: str) -> bool:
+    """True when an unparsed clause asserts its named file is left
+    as it was ("source.txt" remains unchanged): the file is a
+    constraint on the step, never its output. The predicate must
+    sit directly after the subject's quoted name and be about the
+    subject itself: a preservation word inside the filename
+    ("unchanged-jobs.txt") or inside the described contents
+    ("contains a list of unchanged records") is not a claim about
+    the file, and neither is a clause asserting the file changed
+    ("source.txt" is modified). The subject's closing delimiter
+    is the one that opened it, so an apostrophe inside the name
+    ("owner's-notes.txt") does not cut the match short. Parsed
+    clauses are governed by their verb; a preserves clause's
+    subject is a deliverable the step writes, not a file it must
+    leave alone."""
+    if parse_then(clause or "") is not None:
+        return False
+    subject_match = _LEADING_SUBJECT.match(clause or "")
+    if subject_match is None:
+        return False
+    remainder = (clause or "")[subject_match.end():].strip()
+    return bool(_PRESERVATION_PREDICATE.match(remainder))
+
+
+def then_subject_file(clause: str) -> str | None:
+    """The file a Then clause is about: its subject.
+
+    A parsed clause's subject is its verifier's target. A prose
+    clause's subject is a quoted, path-shaped name in subject
+    position, at the clause's start (`"urgent-gear.txt" contains a
+    list of ...`); a file merely mentioned later in the clause (a
+    listing Then enumerating the files it found) is not the
+    subject, and neither is quoted prose. Pure phrasing; never
+    touches the workspace. Issue #48: lint and the executor both
+    keyed only on parsed clauses, so a deliverable named only in
+    a prose Then was invisible to both."""
+    clause = (clause or "").strip()
+    parsed = parse_then(clause)
+    if parsed is not None:
+        return parsed[1]
+    if not _LEADING_QUOTED.match(clause):
+        return None
+    return _named_file(clause)
+
+
 def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     """The attestation fallback, with the issue #22 existence floor.
 

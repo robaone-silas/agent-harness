@@ -476,6 +476,32 @@ def lint_plan(task: str, steps: list,
                         s.id, "warn", "unparseable_check",
                         f"Step {s.id}: Then reads like a check but matches no "
                         f"verifier — it will be taken on trust: {clause[:80]}"))
+                subject = _verify.then_subject_file(clause)
+                if subject and not _verify.absence_intent(clause) \
+                        and not _verify.preservation_intent(clause):
+                    # The clause names a deliverable target even
+                    # though no verifier parses it: count it as one,
+                    # and give it the dangling check every parsed
+                    # target gets (issue #48: a prose contains Then
+                    # named urgent-gear.txt only in the Then, and
+                    # lint stayed silent while the same plan's
+                    # parsed preserves Then drew the ERROR). Absence
+                    # and preservation subjects are not deliverables:
+                    # one names a file meant to be gone, the other a
+                    # file meant to be left as it was, and counting
+                    # either as the plan's output would silence the
+                    # deliverable_clarity warning.
+                    output_files.add(subject)
+                    if subject not in known:
+                        findings.append(LintFinding(
+                            s.id, "error", "dangling_file",
+                            f"Step {s.id}: Then refers to '{subject}', "
+                            f"which no step creates and the task "
+                            f"doesn't mention. The file is named only "
+                            f"in this Then; name it in the step's "
+                            f"When as the file the step writes, so "
+                            f"the executing step knows where to "
+                            f"write."))
                 continue
             verb, path, value = parsed
             if verb in ("indexes", "accounts_for") and path:

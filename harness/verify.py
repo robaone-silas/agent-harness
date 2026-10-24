@@ -755,21 +755,42 @@ def absence_intent(clause: str) -> bool:
     return bool(_ABSENCE_INTENT.search(clause or ""))
 
 
-_PRESERVATION_INTENT = re.compile(
-    r"unchanged|unmodified|untouched|not\s+modified|not\s+changed|"
-    r"remains?\s+as\s+it\s+was|stays?\s+the\s+same",
+_LEADING_SUBJECT = re.compile(
+    r"""^\s*(?:the\s+file\s+)?["'`]([^"'`]+)["'`]""",
+    re.IGNORECASE)
+
+
+_PRESERVATION_PREDICATE = re.compile(
+    r"(?:remains?|stays?)\s+(?:unchanged|unmodified|untouched|"
+    r"as\s+it\s+was|the\s+same)\b"
+    r"|(?:is|was)\s+(?:unchanged|unmodified|untouched)\b"
+    r"|(?:is|was)\s+not\s+(?:modified|changed)\b"
+    r"|(?:is|was)\s+left\s+(?:unchanged|unmodified|untouched|"
+    r"as\s+it\s+was)\b"
+    r"|(?:has|have)\s+not\s+been\s+(?:modified|changed)\b"
+    r"|(?:does|do)\s+not\s+change\b",
     re.IGNORECASE)
 
 
 def preservation_intent(clause: str) -> bool:
     """True when an unparsed clause asserts its named file is left
     as it was ("source.txt" remains unchanged): the file is a
-    constraint on the step, never its output. Parsed clauses are
-    governed by their verb; a preserves clause's subject is a
-    deliverable the step writes, not a file it must leave alone."""
+    constraint on the step, never its output. The predicate must
+    sit directly after the subject's quoted name and be about the
+    subject itself: a preservation word inside the filename
+    ("unchanged-jobs.txt") or inside the described contents
+    ("contains a list of unchanged records") is not a claim about
+    the file, and neither is a clause asserting the file changed
+    ("source.txt" is modified). Parsed clauses are governed by
+    their verb; a preserves clause's subject is a deliverable the
+    step writes, not a file it must leave alone."""
     if parse_then(clause or "") is not None:
         return False
-    return bool(_PRESERVATION_INTENT.search(clause or ""))
+    subject_match = _LEADING_SUBJECT.match(clause or "")
+    if subject_match is None:
+        return False
+    remainder = (clause or "")[subject_match.end():].strip()
+    return bool(_PRESERVATION_PREDICATE.match(remainder))
 
 
 def then_subject_file(clause: str) -> str | None:

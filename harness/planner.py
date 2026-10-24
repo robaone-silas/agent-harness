@@ -1016,7 +1016,13 @@ def _then_named_outputs(step: PlanStep) -> list[str]:
     carries it reaches execution. Absence clauses name no output:
     the file they name is meant to be gone, not written. Neither
     does a preservation clause: the file it names is meant to be
-    left exactly as it was. "Named in the When" is judged on the
+    left exactly as it was. A file a step promises to leave alone
+    or to remove is a constraint on the step, never its output,
+    and that holds whichever clause states it: the constraint
+    subjects are collected across the whole step first, so an
+    existence clause naming the same file ("source.txt" exists
+    beside "source.txt" remains unchanged) cannot resurrect it as
+    a write target. "Named in the When" is judged on the
     When's extracted file mentions and its mv/cp destinations, not
     on substring matching: a destination like archive/<name> is
     named by the move even though the joined path never appears
@@ -1026,14 +1032,21 @@ def _then_named_outputs(step: PlanStep) -> list[str]:
     from . import verify as _verify
     named_in_when = _planlint._mentions(step.instruction or "") \
         | _planlint._move_destinations(step.instruction or "")
-    outputs: list[str] = []
-    for clause in (step.done_when or "").split("\n"):
-        clause = clause.strip()
-        if not clause or _verify.absence_intent(clause) \
+    clauses = [clause.strip()
+               for clause in (step.done_when or "").split("\n")]
+    clauses = [clause for clause in clauses if clause]
+    constrained_subjects: set[str] = set()
+    for clause in clauses:
+        if _verify.absence_intent(clause) \
                 or _verify.preservation_intent(clause):
-            continue
+            subject_file = _verify.then_subject_file(clause)
+            if subject_file:
+                constrained_subjects.add(subject_file)
+    outputs: list[str] = []
+    for clause in clauses:
         subject_file = _verify.then_subject_file(clause)
         if subject_file and subject_file not in named_in_when \
+                and subject_file not in constrained_subjects \
                 and subject_file not in outputs:
             outputs.append(subject_file)
     return outputs

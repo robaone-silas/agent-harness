@@ -243,6 +243,71 @@ def t_absence_intent_respects_parsed_verbs():
           str(planner._then_named_outputs(step)))
 
 
+def t_preservation_subject_excluded_across_clauses():
+    # A sibling existence clause must not resurrect a file another
+    # clause of the same step protects, whichever order they come
+    # in: the constraint is collected across the whole step before
+    # any output candidate is chosen.
+    for thens in (
+            '"source.txt" exists\n"source.txt" remains unchanged',
+            '"source.txt" remains unchanged\n"source.txt" exists'):
+        step = planner.PlanStep(
+            id=2,
+            instruction=("I read the sources from step 1 and write "
+                         "summary.txt"),
+            done_when=thens)
+        check("preserved source names no output in either clause order",
+              planner._then_named_outputs(step) == [],
+              str(planner._then_named_outputs(step)))
+    # The same whole-step rule for absence: an existence clause
+    # beside a removal clause names no output.
+    step = planner.PlanStep(
+        id=2, instruction="I tidy the workspace",
+        done_when=('"scratch.txt" exists\n'
+                   '"scratch.txt" has been removed from the workspace'))
+    check("removed file names no output beside an existence clause",
+          planner._then_named_outputs(step) == [],
+          str(planner._then_named_outputs(step)))
+
+
+def t_preservation_predicate_is_about_the_subject():
+    # A preservation word inside the filename or inside the
+    # described contents is not a claim about the file: both files
+    # below are deliverables to create, not files to leave alone.
+    check("unchanged inside the contents is not preservation",
+          not verify.preservation_intent(
+              '"report.txt" contains a list of unchanged records'))
+    check("unchanged inside the filename is not preservation",
+          not verify.preservation_intent(
+              '"unchanged-jobs.txt" contains a list of repair jobs'))
+    check("remains unchanged is preservation",
+          verify.preservation_intent('"source.txt" remains unchanged'))
+    check("is not modified is preservation",
+          verify.preservation_intent('"source.txt" is not modified'))
+    check("stays the same is preservation",
+          verify.preservation_intent('"source.txt" stays the same'))
+    check("asserting change is not preservation",
+          not verify.preservation_intent('"source.txt" is modified'))
+    step = planner.PlanStep(
+        id=2, instruction="I compile the cleanup report",
+        done_when='"report.txt" contains a list of unchanged records')
+    check("the report keeps its output guidance",
+          planner._then_named_outputs(step) == ["report.txt"],
+          str(planner._then_named_outputs(step)))
+    step = planner.PlanStep(
+        id=2, instruction="I compile the jobs list",
+        done_when='"unchanged-jobs.txt" contains a list of repair jobs')
+    check("the jobs file keeps its output guidance",
+          planner._then_named_outputs(step) == ["unchanged-jobs.txt"],
+          str(planner._then_named_outputs(step)))
+    findings = planlint.lint_plan(
+        "List the repair jobs.", [step])
+    check("the jobs file draws dangling_file as a deliverable",
+          any(f.code == "dangling_file" and f.step_id == 2
+              for f in findings),
+          str([f.as_dict() for f in findings]))
+
+
 # ------------------------------------------------------ executor prompt
 
 def t_step_prompt_names_the_then_only_output_file():
@@ -422,4 +487,6 @@ if __name__ == "__main__":
     t_move_destination_is_not_an_output()
     t_similar_source_name_does_not_hide_the_output()
     t_absence_intent_respects_parsed_verbs()
+    t_preservation_subject_excluded_across_clauses()
+    t_preservation_predicate_is_about_the_subject()
     print("ALL PASSED")

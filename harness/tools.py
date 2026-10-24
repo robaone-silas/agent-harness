@@ -74,12 +74,37 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         return f"exit={proc.returncode}\n{out}"
 
     def t_read_file(path: str, offset: int = 0, limit: int = 200) -> str:
+        # Issue #49: a truncated read used to say only how many chars
+        # were cut, never where the rest was reachable. A step record
+        # nests earlier records, so the payload a later step needs sits
+        # at the end of the file, past the truncation; the model
+        # repeated the identical read until the loop breaker killed
+        # the run. Every cut result therefore names the next page:
+        # the line offset to re-read with, so the next call differs
+        # from the last and the tail is reachable one page at a time.
         p = jail.resolve(path)
         if not p.is_file():
             raise ToolError(f"no such file: {path!r}")
         lines = p.read_text(errors="replace").splitlines()
         chunk = lines[offset:offset + limit]
-        return _truncate("\n".join(chunk), max_output_chars) or "(empty file)"
+        text = "\n".join(chunk)
+        if not text:
+            return "(empty file)"
+        if len(text) > max_output_chars:
+            shown = text[:max_output_chars]
+            # Lines fully inside the shown prefix end with a newline;
+            # the line the cut lands in is read again whole, so no
+            # partial line is ever lost between pages. At least one
+            # line advances, even if a single line exceeds the cap.
+            complete_lines = shown.count("\n")
+            next_offset = offset + max(complete_lines, 1)
+            return (shown + f"\n...[truncated {len(text) - max_output_chars} chars; "
+                    f"file has {len(lines)} lines, "
+                    f"re-read with offset={next_offset} to see the rest]")
+        if offset + limit < len(lines):
+            return (text + f"\n...[more lines: file has {len(lines)} lines, "
+                    f"re-read with offset={offset + limit} to continue]")
+        return text
 
     def t_write_file(path: str, content: str) -> str:
         p = _resolve_for_write(path)
@@ -211,7 +236,9 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
                         "required": ["command"]},
          "func": lambda a: t_exec(a["command"])},
         {"name": "read_file", "description":
-         "Read a text file, optionally paged by line offset/limit.",
+         "Read a text file, optionally paged by line offset/limit. "
+         "If the result is cut short, it names the offset to read next: "
+         "use that offset instead of repeating the same read.",
          "parameters": {"type": "object",
                         "properties": {
                             "path": {"type": "string"},

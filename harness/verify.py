@@ -735,6 +735,18 @@ _LEADING_QUOTED = re.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
                              re.IGNORECASE)
 
 
+_ABSENCE_PREDICATE = re.compile(
+    r"""(?:does|do)\s+not\s+exist\b"""
+    r"""|doesn't\s+exist\b"""
+    r"""|(?:should|shall)\s+not\s+exist\b"""
+    r"""|(?:is|was)\s+absent\b"""
+    r"""|no\s+longer\s+(?:exists|in)\b"""
+    r"""|(?:is|was)\s+no\s+longer\s+(?:there|present|available)\b"""
+    r"""|(?:has|have|had)\s+been\s+(?:removed|deleted)\b"""
+    r"""|(?:was|were|is|are)\s+(?:removed|deleted)\b""",
+    re.IGNORECASE)
+
+
 def absence_intent(clause: str) -> bool:
     """True when the clause wants its named file NOT there, so a
     missing file is the success state, never a gap. This is the
@@ -743,20 +755,28 @@ def absence_intent(clause: str) -> bool:
 
     A parsed clause's verb decides: only not_exists expresses
     absence, so a contains value that happens to be an absence word
-    ("result.txt" contains "removed") is not absence intent. The
-    prose pattern applies to unparsed clauses only. A recognized
-    retired covers clause is never absence intent, as at the
-    floor: it promises its target exists."""
+    ("result.txt" contains "removed") is not absence intent. For
+    unparsed clauses the predicate must sit directly after the
+    subject's quoted name and be about the subject itself, exactly
+    as for preservation: a removal word inside the filename
+    ("deleted-records.txt") or inside the described contents
+    ("contains a list of removed records") is not a claim the file
+    is gone. A recognized retired covers clause is never absence
+    intent, as at the floor: it promises its target exists."""
     parsed = parse_then(clause or "")
     if parsed is not None:
         return parsed[0] == "not_exists"
     if _legacy_covers_target(clause or "") is not None:
         return False
-    return bool(_ABSENCE_INTENT.search(clause or ""))
+    subject_match = _LEADING_SUBJECT.match(clause or "")
+    if subject_match is None:
+        return False
+    remainder = (clause or "")[subject_match.end():].strip()
+    return bool(_ABSENCE_PREDICATE.match(remainder))
 
 
 _LEADING_SUBJECT = re.compile(
-    r"""^\s*(?:the\s+file\s+)?["'`]([^"'`]+)["'`]""",
+    r"""^\s*(?:the\s+file\s+)?""" + _QTEXT,
     re.IGNORECASE)
 
 
@@ -781,9 +801,12 @@ def preservation_intent(clause: str) -> bool:
     ("unchanged-jobs.txt") or inside the described contents
     ("contains a list of unchanged records") is not a claim about
     the file, and neither is a clause asserting the file changed
-    ("source.txt" is modified). Parsed clauses are governed by
-    their verb; a preserves clause's subject is a deliverable the
-    step writes, not a file it must leave alone."""
+    ("source.txt" is modified). The subject's closing delimiter
+    is the one that opened it, so an apostrophe inside the name
+    ("owner's-notes.txt") does not cut the match short. Parsed
+    clauses are governed by their verb; a preserves clause's
+    subject is a deliverable the step writes, not a file it must
+    leave alone."""
     if parse_then(clause or "") is not None:
         return False
     subject_match = _LEADING_SUBJECT.match(clause or "")

@@ -308,6 +308,65 @@ def t_preservation_predicate_is_about_the_subject():
           str([f.as_dict() for f in findings]))
 
 
+def t_preservation_subject_with_apostrophe():
+    # A filename carrying an apostrophe must still match its
+    # preservation predicate: the closing delimiter is the one
+    # that opened the quote, not the apostrophe inside the name.
+    check("apostrophe filename still reads as preservation",
+          verify.preservation_intent(
+              "\"owner's-notes.txt\" remains unchanged"))
+    step = planner.PlanStep(
+        id=2,
+        instruction=("I read the sources from step 1 and write "
+                     "summary.txt"),
+        done_when=('"owner\'s-notes.txt" exists\n'
+                   '"owner\'s-notes.txt" remains unchanged'))
+    check("apostrophe source names no output beside its exists clause",
+          planner._then_named_outputs(step) == [],
+          str(planner._then_named_outputs(step)))
+
+
+def t_absence_predicate_is_about_the_subject():
+    # The round-2 anchoring lesson, applied to absence: a removal
+    # word inside the filename or inside the described contents is
+    # not a claim the file is gone. Both files below are
+    # deliverables to create, not files to remove.
+    check("removed inside the contents is not absence",
+          not verify.absence_intent(
+              '"report.txt" contains a list of removed records'))
+    check("deleted inside the filename is not absence",
+          not verify.absence_intent(
+              '"deleted-records.txt" contains a list of repair jobs'))
+    check("has been removed is absence",
+          verify.absence_intent(
+              '"scratch.txt" has been removed from the workspace'))
+    check("does not exist is absence",
+          verify.absence_intent('"scratch.txt" does not exist'))
+    check("is absent is absence",
+          verify.absence_intent('"scratch.txt" is absent'))
+    check("no longer exists is absence",
+          verify.absence_intent('"scratch.txt" no longer exists'))
+    check("was deleted is absence",
+          verify.absence_intent('"scratch.txt" was deleted'))
+    step = planner.PlanStep(
+        id=2, instruction="I compile the removals report",
+        done_when='"report.txt" contains a list of removed records')
+    check("the removals report keeps its output guidance",
+          planner._then_named_outputs(step) == ["report.txt"],
+          str(planner._then_named_outputs(step)))
+    step = planner.PlanStep(
+        id=2, instruction="I compile the deletions list",
+        done_when='"deleted-records.txt" contains a list of repair jobs')
+    check("the deletions file keeps its output guidance",
+          planner._then_named_outputs(step) == ["deleted-records.txt"],
+          str(planner._then_named_outputs(step)))
+    findings = planlint.lint_plan("List the repair jobs.", [step])
+    check("the deletions file draws dangling_file as a deliverable",
+          any(f.code == "dangling_file" and f.step_id == 2
+              for f in findings),
+          str([f.as_dict() for f in findings]))
+
+
 # ------------------------------------------------------ executor prompt
 
 def t_step_prompt_names_the_then_only_output_file():
@@ -489,4 +548,6 @@ if __name__ == "__main__":
     t_absence_intent_respects_parsed_verbs()
     t_preservation_subject_excluded_across_clauses()
     t_preservation_predicate_is_about_the_subject()
+    t_preservation_subject_with_apostrophe()
+    t_absence_predicate_is_about_the_subject()
     print("ALL PASSED")

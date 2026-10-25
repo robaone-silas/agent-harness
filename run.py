@@ -62,6 +62,31 @@ def _show_graph(task, steps, workspace):
         print(f"  step {f.step_id} [{tag} {f.code}]: {f.detail}")
 
 
+def _exit_code(status: str) -> int:
+    """Exit code for a run status (issue #37): a run that finished on
+    trust still completed, so it exits 0 exactly like a verified done.
+    Only genuinely failed runs exit 1."""
+    return 0 if status in ("done", "done_on_trust") else 1
+
+
+def _display_status(status: str) -> str:
+    """The headline form of a run status: done_on_trust reads as the
+    sentence a human would say, not the machine token."""
+    return "done on trust" if status == "done_on_trust" else status
+
+
+def _show_trust(result, quiet=False):
+    """List the trust-only steps of a finished run, if any (issue #37).
+    Silent when the run has none; the headline alone carries verified
+    runs."""
+    if quiet or not getattr(result, "trust_only", None):
+        return
+    for entry in result.trust_only:
+        names = ", ".join(entry["deliverables"])
+        print(f"  trust-only step {entry['step']}: {names} "
+              f"(content on trust, not machine-checked)")
+
+
 def show_event(kind, *args, quiet=False):
     if quiet:
         return
@@ -200,9 +225,10 @@ def run_feature(cfg, path, stamp) -> int:
         plan.title, steps, cfg,
         on_event=lambda k, *a: show_event(k, *a, quiet=cfg.quiet))
     if not cfg.quiet:
-        print(f"\n== {result.status} ==")
+        print(f"\n== {_display_status(result.status)} ==")
+        _show_trust(result)
     print(result.answer)
-    return 0 if result.status == "done" else 1
+    return _exit_code(result.status)
 
 
 def run_auto(cfg, task, stamp) -> int:
@@ -220,9 +246,10 @@ def run_auto(cfg, task, stamp) -> int:
                    **result.plan_dict()}, f, indent=2)
     if not cfg.quiet:
         print(f"\nplan: {plan_path}")
-        print(f"== {result.status} ==")
+        print(f"== {_display_status(result.status)} ==")
+        _show_trust(result)
     print(result.answer)
-    return 0 if result.status == "done" else 1
+    return _exit_code(result.status)
 
 
 def run_direct(cfg, task, stamp) -> int:

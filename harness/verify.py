@@ -916,3 +916,50 @@ def missing_deliverables(steps, jail: Jail) -> list[str]:
         if not p.exists():
             missing.append(rel)
     return missing
+
+
+def _check_verifier(check) -> str | None:
+    """The verifier name recorded for a check, dict or CheckResult."""
+    if isinstance(check, dict):
+        return check.get("verifier")
+    return getattr(check, "verifier", None)
+
+
+def trust_only_steps(steps) -> list[dict]:
+    """Steps whose deliverable rests entirely on trust (issue #37).
+
+    A step counts when it finished done, its recorded checks are all
+    the attestation fallback, and at least one file its Thens name is
+    a promised deliverable. A prose Then on a read step names no
+    promised file and does not taint the run. A waived step keeps its
+    own separate flag and never counts here, and a failed step cannot
+    taint a run that never completed. Returns plan-ordered
+    [{"step": id, "deliverables": [names]}]. Pure phrasing over the
+    recorded checks; never touches the workspace."""
+    promised = set(promised_deliverables(steps))
+    out: list[dict] = []
+    for step in steps:
+        if getattr(step, "status", None) != "done":
+            continue
+        if getattr(step, "verify_waived", False):
+            continue
+        checks = getattr(step, "verify", None) or []
+        if not checks or not all(_check_verifier(c) == "attest"
+                                 for c in checks):
+            continue
+        named: set[str] = set()
+        for clause in (step.done_when or "").split("\n"):
+            clause = clause.strip()
+            if not clause:
+                continue
+            parsed = parse_then(clause)
+            if parsed and parsed[1]:
+                named.add(parsed[1])
+                continue
+            named_file = _named_file(clause)
+            if named_file:
+                named.add(named_file)
+        deliverables = sorted(f for f in named if f in promised)
+        if deliverables:
+            out.append({"step": step.id, "deliverables": deliverables})
+    return out

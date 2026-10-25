@@ -173,7 +173,11 @@ def t_replay_tomas_shape_completes():
         r = planner.execute_plan("make a list of my house papers",
                                  parse(tomas_plan("steps 1 through 5")),
                                  cfg, chat_fn=fake)
-        check("replay plan completes", r.status == "done", r.status)
+        check("replay plan completes on trust", r.status == "done_on_trust",
+              r.status)
+        check("run names the trust-only deliverable",
+              any(e["deliverables"] == ["house_papers_list.txt"]
+                  for e in r.trust_only), str(r.trust_only))
         check("compile step budget covered its planned turns",
               (r.steps[-1].budget or 0) >= 7, str(r.steps[-1].budget))
         check("the deliverable was written",

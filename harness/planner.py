@@ -741,13 +741,17 @@ def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
 
 @dataclass
 class PlannedRun:
-    status: str  # done | plan_failed | step_failed | model_error
+    status: str  # done | done_on_trust | plan_failed | step_failed | model_error
     answer: str
     steps: list[PlanStep] = field(default_factory=list)
     run_id: str = ""  # .harness/runs/<run_id>/ for this run (v0.8.1)
+    trust_only: list = field(default_factory=list)  # [{"step": id,
+        # "deliverables": [names]}] for steps whose deliverable rests
+        # entirely on attested checks (issue #37)
 
     def plan_dict(self) -> dict:
         return {"run_id": self.run_id,
+                "trust_only": self.trust_only,
                 "steps": [
             {"id": s.id, "instruction": s.instruction, "done_when": s.done_when,
              "intent": s.intent, "budget": s.budget,
@@ -1383,18 +1387,38 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
         return PlannedRun(status, answer, steps,
                           run_id=store.run_id if store is not None else "")
 
+    # Issue #37: a run that finished with a deliverable resting
+    # entirely on attested checks must not report plain done. The
+    # trust-only steps are named in the final status, while the run
+    # still counts as completed (see run.py's exit mapping).
+    trust_only: list = []
+    if status == "done":
+        from . import verify as _verify
+        trust_only = _verify.trust_only_steps(steps)
+        if trust_only:
+            status = "done_on_trust"
+
     summary = (f"Overall goal: {task}\nPlan execution ended: {status}.\n"
                + "\n".join(f"Step {s.id} [{s.status}]: {s.instruction}"
                             + (f" -> {s.result[:200]}" if s.result else "")
-                            for s in steps)
-               + '\nSummarize the outcome in 2-4 sentences, starting with "DONE:".')
+                            for s in steps))
+    if trust_only:
+        names = "; ".join(
+            f"step {e['step']} ({', '.join(e['deliverables'])})"
+            for e in trust_only)
+        summary += (f"\nSteps finished on trust: {names}. Their Then "
+                    f"clauses were attested, not machine-checked, so "
+                    f"their deliverables' contents were never verified. "
+                    f"Say plainly which steps finished on trust.")
+    summary += ('\nSummarize the outcome in 2-4 sentences, starting with "DONE:".')
     try:
         msg = chat_fn([{"role": "user", "content": summary}], None)
         answer = (msg.get("content") or "").strip() or "(no summary)"
     except Exception as e:
         answer = f"(summary call failed: {e})"
     return PlannedRun(status, answer, steps,
-                      run_id=store.run_id if store is not None else "")
+                      run_id=store.run_id if store is not None else "",
+                      trust_only=trust_only)
 
 
 def run_planned(task: str, cfg: Config, chat_fn=None, on_event=None) -> PlannedRun:

@@ -160,7 +160,11 @@ def t_replay_priya_shape_completes():
         cfg = make_cfg(d)  # default flat cap is 6; step 2 needs 9 turns
         r = planner.execute_plan("index every file", parse(PRIYA_PLAN),
                                  cfg, chat_fn=fake)
-        check("replay plan completes", r.status == "done", r.status)
+        check("replay plan completes on trust", r.status == "done_on_trust",
+              r.status)
+        check("run names the trust-only deliverable",
+              any(e["deliverables"] == ["audit-index.md"]
+                  for e in r.trust_only), str(r.trust_only))
         check("step 2 records its computed budget",
               (r.steps[1].budget or 0) >= 9, str(r.steps[1].budget))
         check("the index was written",

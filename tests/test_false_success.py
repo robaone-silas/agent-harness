@@ -305,8 +305,11 @@ def t_daniel_shape_cannot_report_done():
 def t_daniel_shape_recovers_with_feedback():
     result, d = _run_daniel(recovery=True)
     try:
-        check("with the feedback acted on, the run completes",
-              result.status == "done", result.status)
+        check("with the feedback acted on, the run completes on trust",
+              result.status == "done_on_trust", result.status)
+        check("run names the trust-only deliverable",
+              any(e["deliverables"] == ["organization-strategy.md"]
+                  for e in result.trust_only), str(result.trust_only))
         check("the deliverable exists with the strategy",
               Path(d, "organization-strategy.md").read_text() == STRATEGY)
     finally:

@@ -1,0 +1,69 @@
+name: Version check
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check code version is greater than the current release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python - <<'PYEOF'
+          import re
+          import subprocess
+          import sys
+
+          with open("harness/__init__.py", encoding="utf-8") as f:
+              text = f.read()
+          match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+          if not match:
+              print("No __version__ found in harness/__init__.py.")
+              sys.exit(1)
+          code = match.group(1)
+
+          result = subprocess.run(
+              ["gh", "api", "repos/${{ github.repository }}/releases/latest",
+               "--jq", ".tag_name"],
+              capture_output=True, text=True)
+          tag = result.stdout.strip() if result.returncode == 0 else ""
+          release = tag[1:] if tag.startswith("v") else tag
+          if not release:
+              print("No published release found; nothing to compare against.")
+              sys.exit(0)
+
+          def parse(version):
+              parts = []
+              for piece in version.split("."):
+                  digits = re.match(r"\d+", piece)
+                  parts.append(int(digits.group()) if digits else 0)
+              return tuple(parts)
+
+          def pad(version_tuple, length):
+              return version_tuple + (0,) * (length - len(version_tuple))
+
+          code_version = parse(code)
+          release_version = parse(release)
+          width = max(len(code_version), len(release_version))
+          if pad(code_version, width) > pad(release_version, width):
+              print(f"OK: code version {code} is greater than "
+                    f"current release {release}.")
+          else:
+              print(f"FAIL: code version {code} is not greater than "
+                    f"current release {release}.")
+              sys.exit(1)
+          PYEOF

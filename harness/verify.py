@@ -107,29 +107,6 @@ def _deferral_in(text: str) -> str | None:
     return None
 
 
-# Exhaustive cues for strict covers (issue #17, part 2): language that
-# makes completeness, not sampling, the stated contract. Deliberately
-# narrow, the phrases named in the issue: every file, all files, do not
-# omit, each entry/file, no omissions (plus their closest variants).
-# Summaries and strategy documents carry none of these and keep the
-# at-least-half covers floor.
-_EXHAUSTIVE_CUES = [re.compile(p, re.IGNORECASE) for p in (
-    r"\bevery\s+(?:file|entry|document|paper|record)s?\b",
-    r"\ball\s+(?:the\s+)?(?:file|entry|document|paper|record)s\b",
-    r"\bdo\s+not\s+omit\b", r"\bdon['’]t\s+omit\b",
-    r"\bwithout\s+omitting\b", r"\bomit(?:s|ting)?\s+none\b",
-    r"\bno\s+omissions?\b", r"\bnothing\s+(?:is\s+)?omitted\b",
-    r"\beach\s+(?:entry|file|document|paper|record)\b",
-)]
-
-
-def _strict_covers(ctx: VerifyContext) -> bool:
-    """True when the task or the covers step's Intent states a
-    completeness contract, so covers must require every source item."""
-    text = f"{ctx.task or ''}\n{ctx.intent or ''}"
-    return any(rx.search(text) for rx in _EXHAUSTIVE_CUES)
-
-
 def collect_step_items(sub_steps) -> list[str]:
     """Extract the item names a step produced, from listing-shaped tool
     results: list_dir and grep_files outputs (one workspace-relative name
@@ -210,60 +187,6 @@ def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
                        f"{rel!r} has {got} lines, expected {n}")
 
 
-@verifier("covers",
-          # Phrasing tolerance (field, 2026-10-03): the planner produced
-          # 'the contents of "organization.md" cover the files from step 1'
-          # live: an optional contents-of prefix and cover/covers both
-          # match. The anchors stay strict: a real path, "the files", and
-          # a step reference, whole-clause.
-          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+covers?\s+the\s+files\s+"""
-          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
-def _v_covers(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    step_no = int(m.group(5))
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "covers", err)
-    items = list(ctx.prior_items.get(step_no) or [])
-    if not items:
-        # Nothing recorded to measure against: the harness only fails what
-        # it can actually check, and says plainly that it did not check.
-        return CheckResult(then, True, "covers",
-                           f"step {step_no} produced no file list — "
-                           f"coverage not checked")
-    if not p.is_file():
-        return CheckResult(then, False, "covers",
-                           f"{rel!r} is not a file — expected it to cover "
-                           f"the {len(items)} files from step {step_no}")
-    content = p.read_text(errors="replace")
-    bad = _deferral_in(content)
-    if bad:
-        return CheckResult(then, False, "covers",
-                           f"{rel!r} contains a deferral ({bad!r}) — the "
-                           f"document must be finished, not promised")
-    covered = [i for i in items if i in content]
-    strict = _strict_covers(ctx)
-    # Issue #17 part 2: an exhaustive task or Intent makes completeness
-    # the contract, so every source item must be mentioned. Otherwise
-    # the floor stays at least half, for summaries and strategy docs.
-    need = len(items) if strict else max(1, -(-len(items) // 2))
-    if len(covered) >= need:
-        return CheckResult(then, True, "covers",
-                           f"{rel!r} mentions {len(covered)} of {len(items)} "
-                           f"files from step {step_no}")
-    missing = [i for i in items if i not in content]
-    need_text = (f"exhaustive task: needs all {need}" if strict
-                 else f"needs at least {need}")
-    detail = (f"{rel!r} mentions {len(covered)} of {len(items)} files from "
-              f"step {step_no} ({need_text}); missing include: "
-              + ", ".join(missing[:12]))
-    if len(missing) > 12:
-        detail += (f" and {len(missing) - 12} more "
-                   f"(see step {step_no}'s stored output)")
-    return CheckResult(then, False, "covers", detail)
-
-
 @verifier("indexes",
           rf"""^{_FILE}{_QPATH}\s+indexes\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
@@ -325,9 +248,16 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
 # A step-reference phrase inside prose: singular, plural lists, and
 # ranges. Same grammar as planner._step_refs; verify.py cannot import
 # planner (planner imports verify), so the segment parser is local,
-# like graphcheck's and planlint's own reference patterns.
+# like graphcheck's and planlint's own reference patterns. A plural
+# head may carry a single number ("steps 2"), and separators may
+# repeat between numbers, so an Oxford comma list ("steps 1, 2, and
+# 3") parses whole instead of dropping its last member. The whitespace
+# before a separator run sits outside the repeated group: with a \s*
+# on both sides of each separator, adjacent repetitions can split the
+# same spaces between them and backtrack exponentially when the tail
+# never reaches a number.
 _PRES_SEG = re.compile(
-    r"\bsteps?\s+(\d+(?:\s*(?:,|and|through|to|[-–—])\s*\d+)+)",
+    r"\bsteps?\s+(\d+(?:\s*(?:(?:,|and|through|to|[-–—])\s*)+\d+)*)",
     re.IGNORECASE)
 _PRES_TOKEN = re.compile(r"\d+|through|to|and|,|[-–—]", re.IGNORECASE)
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
@@ -337,17 +267,30 @@ def _refs_in(text: str) -> list[int]:
     refs = [int(n) for n in re.findall(r"\bstep\s+(\d+)", text or "",
                                        re.IGNORECASE)]
     for m in _PRES_SEG.finditer(text or ""):
-        toks = _PRES_TOKEN.findall(m.group(1))
-        nums = [t for t in toks if t.isdigit()]
-        seps = [t for t in toks if not t.isdigit()]
+        nums: list[int] = []
+        gaps: list[str] = []
+        pending: list[str] = []
+        for tok in _PRES_TOKEN.findall(m.group(1)):
+            if tok.isdigit():
+                if nums:
+                    # One connector per numeric gap: the last separator
+                    # spoken before the next number governs that gap,
+                    # so repeated separators (", and") cannot shift the
+                    # pairing between numbers and connectors. The token
+                    # walk in planner._step_refs pairs them the same way.
+                    gaps.append(pending[-1].strip().lower()
+                                if pending else "")
+                nums.append(int(tok))
+                pending = []
+            else:
+                pending.append(tok)
         for i, num in enumerate(nums):
-            if (i + 1 < len(nums) and i < len(seps)
-                    and seps[i].strip().lower() in _PRES_RANGE_SEPS):
-                a, b = int(num), int(nums[i + 1])
+            if (i + 1 < len(nums) and gaps[i] in _PRES_RANGE_SEPS):
+                a, b = num, nums[i + 1]
                 if 0 < abs(b - a) <= 64:
                     refs.extend(range(min(a, b), max(a, b) + 1))
                     continue
-            refs.append(int(num))
+            refs.append(num)
     seen: set[int] = set()
     out: list[int] = []
     for r in refs:
@@ -428,6 +371,54 @@ def _norm(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").casefold()
 
 
+@verifier("accounts_for",
+          # The listing-only completeness contract (Daniel Okafor's
+          # shape): the step writes from a listing's names alone, the
+          # contents unread (often unreadable by the task's own rule).
+          # Strict, unlike covers: when names are the only material,
+          # there is no legitimate sampling, so every listed file
+          # must appear. Phrasing tolerance mirrors covers (optional
+          # contents-of prefix).
+          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+files\s+"""
+          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
+def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
+    rel = _pick(*m.groups()[0:4])
+    step_no = int(m.group(5))
+    then = m.string.strip()
+    p, err = _resolve(ctx, rel)
+    if err:
+        return CheckResult(then, False, "accounts_for", err)
+    items = list(ctx.prior_items.get(step_no) or [])
+    if not items:
+        return CheckResult(then, True, "accounts_for",
+                           f"step {step_no} produced no file list — "
+                           f"accounting not checked")
+    if not p.is_file():
+        return CheckResult(then, False, "accounts_for",
+                           f"{rel!r} is not a file — expected it to "
+                           f"account for the {len(items)} files from "
+                           f"step {step_no}")
+    content = p.read_text(errors="replace")
+    bad = _deferral_in(content)
+    if bad:
+        return CheckResult(then, False, "accounts_for",
+                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"the document must be finished, not promised")
+    missing = [i for i in items if i not in content]
+    if not missing:
+        return CheckResult(then, True, "accounts_for",
+                           f"{rel!r} accounts for all {len(items)} "
+                           f"files from step {step_no}")
+    detail = (f"{rel!r} accounts for {len(items) - len(missing)} of "
+              f"{len(items)} files from step {step_no}; every listed "
+              f"file must be accounted for; missing include: "
+              + ", ".join(missing[:12]))
+    if len(missing) > 12:
+        detail += (f" and {len(missing) - 12} more "
+                   f"(see step {step_no}'s stored output)")
+    return CheckResult(then, False, "accounts_for", detail)
+
+
 @verifier("preserves",
           rf"""^{_FILE}{_QPATH}\s+preserves?\s+(.+?)\s+from\s+(.+?)\s*[.!]?\s*$""")
 def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
@@ -442,9 +433,16 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
     refs = [r for r in _refs_in(m.group(6)) if r != ctx.step_id]
     then = m.string.strip()
     if not fields or not refs:
-        return CheckResult(then, True, "preserves",
-                           "the clause names no fields or no source "
-                           "steps — preservation not checked")
+        if not fields and not refs:
+            detail = ("the clause names no fields and no source "
+                      "steps: preservation not checked")
+        elif not fields:
+            detail = ("the clause names no fields: "
+                      "preservation not checked")
+        else:
+            detail = ("the clause names no source steps: "
+                      "preservation not checked")
+        return CheckResult(then, True, "preserves", detail)
     p, err = _resolve(ctx, rel)
     if err:
         return CheckResult(then, False, "preserves", err)
@@ -678,6 +676,20 @@ def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
 
 
 _QUOTED = re.compile(r'''"([^"]*)"|'([^']*)'|`([^`]*)`''')
+# A saved plan's covers clause: the verb is retired, so the clause
+# is never checked as covers, but it still names its deliverable.
+# This is the retired verifier's target grammar, kept so the
+# existence floor and the deliverable audit can read that name in
+# every written form, including the bare and contents-of forms that
+# contain no quoted span. (graphcheck keeps its own copy for the
+# approval graph.)
+_COVERS_CLAUSE = re.compile(
+    r"^\s*(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?"
+    r"(?:the\s+file\s+)?"
+    r"(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`|([\w./\\-]+))"
+    r"\s+covers?\s+the\s+files\s+"
+    r"(?:from|listed\s+(?:in|by))\s+step\s+\d+\s*[.!]?\s*$",
+    re.IGNORECASE)
 # Absence intent: the clause wants the named file NOT there, so a
 # missing file is the success state, never a floor failure.
 _ABSENCE_INTENT = re.compile(
@@ -685,21 +697,144 @@ _ABSENCE_INTENT = re.compile(
     r"\babsent\b|\bremoved\b|\bdeleted\b", re.IGNORECASE)
 
 
+def _legacy_covers_target(then: str) -> str | None:
+    """The target of a retired covers clause, or None when the
+    clause is not one. A covers clause is a positive existence
+    promise by construction: its target is the deliverable,
+    whatever words the filename itself contains."""
+    covers_match = _COVERS_CLAUSE.match(then or "")
+    if not covers_match:
+        return None
+    name = _pick(*covers_match.groups())
+    return name.strip() if name else None
+
+
 def _named_file(then: str) -> str | None:
     """The workspace file a Then clause names, when it names one in
     quotes and the quoted text is path-shaped (no whitespace, and
     either a slash or a dotted extension). Quoted prose ("done",
-    a quoted phrase) is not a file. Pure phrasing; never touches
-    the workspace."""
-    m = _QUOTED.search(then or "")
-    if not m:
+    a quoted phrase) is not a file. A retired covers clause also
+    names its target, in the grammar above, quoted or bare. Pure
+    phrasing; never touches the workspace."""
+    covers_target = _legacy_covers_target(then)
+    if covers_target is not None:
+        return covers_target
+    quoted_match = _QUOTED.search(then or "")
+    if not quoted_match:
         return None
-    name = next(g for g in m.groups() if g is not None).strip()
+    name = next(alternative for alternative in quoted_match.groups()
+                if alternative is not None).strip()
     if not name or any(c.isspace() for c in name):
         return None
     if "/" in name or re.search(r"\.[\w-]+$", name):
         return name
     return None
+
+
+_LEADING_QUOTED = re.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
+                             re.IGNORECASE)
+
+
+_ABSENCE_PREDICATE = re.compile(
+    r"""(?:does|do)\s+not\s+exist\b"""
+    r"""|doesn't\s+exist\b"""
+    r"""|(?:should|shall)\s+not\s+exist\b"""
+    r"""|(?:is|was)\s+absent\b"""
+    r"""|no\s+longer\s+(?:exists|in)\b"""
+    r"""|(?:is|was)\s+no\s+longer\s+(?:there|present|available)\b"""
+    r"""|(?:has|have|had)\s+been\s+(?:removed|deleted)\b"""
+    r"""|(?:was|were|is|are)\s+(?:removed|deleted)\b""",
+    re.IGNORECASE)
+
+
+def absence_intent(clause: str) -> bool:
+    """True when the clause wants its named file NOT there, so a
+    missing file is the success state, never a gap. This is the
+    exemption the existence floor and the deliverable audit apply;
+    lint applies it too, so the layers agree on absence clauses.
+
+    A parsed clause's verb decides: only not_exists expresses
+    absence, so a contains value that happens to be an absence word
+    ("result.txt" contains "removed") is not absence intent. For
+    unparsed clauses the predicate must sit directly after the
+    subject's quoted name and be about the subject itself, exactly
+    as for preservation: a removal word inside the filename
+    ("deleted-records.txt") or inside the described contents
+    ("contains a list of removed records") is not a claim the file
+    is gone. A recognized retired covers clause is never absence
+    intent, as at the floor: it promises its target exists."""
+    parsed = parse_then(clause or "")
+    if parsed is not None:
+        return parsed[0] == "not_exists"
+    if _legacy_covers_target(clause or "") is not None:
+        return False
+    subject_match = _LEADING_SUBJECT.match(clause or "")
+    if subject_match is None:
+        return False
+    remainder = (clause or "")[subject_match.end():].strip()
+    return bool(_ABSENCE_PREDICATE.match(remainder))
+
+
+_LEADING_SUBJECT = re.compile(
+    r"""^\s*(?:the\s+file\s+)?""" + _QTEXT,
+    re.IGNORECASE)
+
+
+_PRESERVATION_PREDICATE = re.compile(
+    r"(?:remains?|stays?)\s+(?:unchanged|unmodified|untouched|"
+    r"as\s+it\s+was|the\s+same)\b"
+    r"|(?:is|was)\s+(?:unchanged|unmodified|untouched)\b"
+    r"|(?:is|was)\s+not\s+(?:modified|changed)\b"
+    r"|(?:is|was)\s+left\s+(?:unchanged|unmodified|untouched|"
+    r"as\s+it\s+was)\b"
+    r"|(?:has|have)\s+not\s+been\s+(?:modified|changed)\b"
+    r"|(?:does|do)\s+not\s+change\b",
+    re.IGNORECASE)
+
+
+def preservation_intent(clause: str) -> bool:
+    """True when an unparsed clause asserts its named file is left
+    as it was ("source.txt" remains unchanged): the file is a
+    constraint on the step, never its output. The predicate must
+    sit directly after the subject's quoted name and be about the
+    subject itself: a preservation word inside the filename
+    ("unchanged-jobs.txt") or inside the described contents
+    ("contains a list of unchanged records") is not a claim about
+    the file, and neither is a clause asserting the file changed
+    ("source.txt" is modified). The subject's closing delimiter
+    is the one that opened it, so an apostrophe inside the name
+    ("owner's-notes.txt") does not cut the match short. Parsed
+    clauses are governed by their verb; a preserves clause's
+    subject is a deliverable the step writes, not a file it must
+    leave alone."""
+    if parse_then(clause or "") is not None:
+        return False
+    subject_match = _LEADING_SUBJECT.match(clause or "")
+    if subject_match is None:
+        return False
+    remainder = (clause or "")[subject_match.end():].strip()
+    return bool(_PRESERVATION_PREDICATE.match(remainder))
+
+
+def then_subject_file(clause: str) -> str | None:
+    """The file a Then clause is about: its subject.
+
+    A parsed clause's subject is its verifier's target. A prose
+    clause's subject is a quoted, path-shaped name in subject
+    position, at the clause's start (`"urgent-gear.txt" contains a
+    list of ...`); a file merely mentioned later in the clause (a
+    listing Then enumerating the files it found) is not the
+    subject, and neither is quoted prose. Pure phrasing; never
+    touches the workspace. Issue #48: lint and the executor both
+    keyed only on parsed clauses, so a deliverable named only in
+    a prose Then was invisible to both."""
+    clause = (clause or "").strip()
+    parsed = parse_then(clause)
+    if parsed is not None:
+        return parsed[1]
+    if not _LEADING_QUOTED.match(clause):
+        return None
+    return _named_file(clause)
 
 
 def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
@@ -713,16 +848,20 @@ def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     clause naming a quoted file cannot pass on trust while that
     file is missing. The failure feeds the step's normal retry with
     the exact missing path. Absence-intent clauses are exempt:
-    there the missing file is the success state."""
-    named = _named_file(then)
-    if named and not _ABSENCE_INTENT.search(then):
-        p, err = _resolve(ctx, named)
-        if not err and p is not None and not p.exists():
+    there the missing file is the success state. A recognized
+    retired covers clause is never absence intent: it promises
+    its target exists, even when the filename itself contains an
+    absence word."""
+    named_file = _named_file(then)
+    if named_file and (_legacy_covers_target(then) is not None
+                       or not _ABSENCE_INTENT.search(then)):
+        path, err = _resolve(ctx, named_file)
+        if not err and path is not None and not path.exists():
             return CheckResult(
                 then, False, "attest",
-                f"named file {named!r} does not exist — a clause "
+                f"named file {named_file!r} does not exist — a clause "
                 f"about a file cannot pass on trust while the file "
-                f"is missing; create {named!r} with the promised "
+                f"is missing; create {named_file!r} with the promised "
                 f"content")
     return CheckResult(then, True, "attest",
                        "no verifier matched — taking the model's word")
@@ -732,33 +871,36 @@ def promised_deliverables(steps) -> list[str]:
     """The files a plan promises will exist when the run ends: the
     subject file of every exists / covers / indexes / contains-family
     Then, plus any quoted file a prose Then names, minus anything a
-    not_exists (or absence-intent) Then names. Derived from the
-    Thens alone, sorted for determinism. Issue #22: this set is the
-    run's contract with the user, audited at the end of the run."""
+    not_exists (or absence-intent) Then names. A retired covers
+    clause counts as a positive promise, never absence intent.
+    Derived from the Thens alone, sorted for determinism. Issue
+    #22: this set is the run's contract with the user, audited at
+    the end of the run."""
     promised: list[str] = []
     excluded: set[str] = set()
-    for s in steps:
-        for clause in (s.done_when or "").split("\n"):
+    for step in steps:
+        for clause in (step.done_when or "").split("\n"):
             clause = clause.strip()
             if not clause:
                 continue
             parsed = parse_then(clause)
             if parsed:
-                name, path, _value = parsed
+                verb, path, _value = parsed
                 if path is None:
                     continue
-                if name == "not_exists":
+                if verb == "not_exists":
                     excluded.add(path)
                 elif path not in promised:
                     promised.append(path)
                 continue
-            named = _named_file(clause)
-            if named is None:
+            named_file = _named_file(clause)
+            if named_file is None:
                 continue
-            if _ABSENCE_INTENT.search(clause):
-                excluded.add(named)
-            elif named not in promised:
-                promised.append(named)
+            if (_legacy_covers_target(clause) is None
+                    and _ABSENCE_INTENT.search(clause)):
+                excluded.add(named_file)
+            elif named_file not in promised:
+                promised.append(named_file)
     return sorted(p for p in promised if p not in excluded)
 
 
@@ -774,3 +916,50 @@ def missing_deliverables(steps, jail: Jail) -> list[str]:
         if not p.exists():
             missing.append(rel)
     return missing
+
+
+def _check_verifier(check) -> str | None:
+    """The verifier name recorded for a check, dict or CheckResult."""
+    if isinstance(check, dict):
+        return check.get("verifier")
+    return getattr(check, "verifier", None)
+
+
+def trust_only_steps(steps) -> list[dict]:
+    """Steps whose deliverable rests entirely on trust (issue #37).
+
+    A step counts when it finished done, its recorded checks are all
+    the attestation fallback, and at least one file its Thens name is
+    a promised deliverable. A prose Then on a read step names no
+    promised file and does not taint the run. A waived step keeps its
+    own separate flag and never counts here, and a failed step cannot
+    taint a run that never completed. Returns plan-ordered
+    [{"step": id, "deliverables": [names]}]. Pure phrasing over the
+    recorded checks; never touches the workspace."""
+    promised = set(promised_deliverables(steps))
+    out: list[dict] = []
+    for step in steps:
+        if getattr(step, "status", None) != "done":
+            continue
+        if getattr(step, "verify_waived", False):
+            continue
+        checks = getattr(step, "verify", None) or []
+        if not checks or not all(_check_verifier(c) == "attest"
+                                 for c in checks):
+            continue
+        named: set[str] = set()
+        for clause in (step.done_when or "").split("\n"):
+            clause = clause.strip()
+            if not clause:
+                continue
+            parsed = parse_then(clause)
+            if parsed and parsed[1]:
+                named.add(parsed[1])
+                continue
+            named_file = _named_file(clause)
+            if named_file:
+                named.add(named_file)
+        deliverables = sorted(f for f in named if f in promised)
+        if deliverables:
+            out.append({"step": step.id, "deliverables": deliverables})
+    return out

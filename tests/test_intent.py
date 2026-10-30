@@ -161,7 +161,11 @@ def t_step_prompt_surfaces_intent():
             return {"role": "assistant", "content": "DONE: done."}
 
         r = planner.run_planned("make the guide", cfg, chat_fn=fake)
-        check("run completes", r.status == "done", r.status)
+        check("run completes on trust (guide rests on a retired covers clause)",
+              r.status == "done_on_trust", r.status)
+        check("run names the trust-only deliverable",
+              any(e["deliverables"] == ["guide.md"] for e in r.trust_only),
+              str(r.trust_only))
         step2 = next((p for p in prompts if "executing step 2" in p), "")
         check("step 2 prompt carries its intent",
               "one-sentence summary of its argument" in step2, step2[:600])

@@ -97,7 +97,11 @@ def t_summary_ending_attested_clause_overrides():
             id=1, instruction="Write the work list to work_list.txt",
             done_when='"work_list.txt" contains the compiled work list')
         r, events = _run(step, Narrator("work_list.txt", WORK_LIST), d)
-        check("run done on world state", r.status == "done", r.status)
+        check("run done on world state, on trust",
+              r.status == "done_on_trust", r.status)
+        check("run names the trust-only deliverable",
+              any(e["deliverables"] == ["work_list.txt"]
+                  for e in r.trust_only), str(r.trust_only))
         check("step done", step.status == "done", step.status)
         check("override recorded on the step",
               step.done_via_world_state is True)

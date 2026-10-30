@@ -122,7 +122,11 @@ python3 run.py --run plan.feature
 1. **Propose** (`--plan`): the model is asked once for a Gherkin plan
    (2–6 scenarios). The harness parses and validates it — a missing
    `Then`, or an unresolvable `<placeholder>`, is rejected here with the
-   reason, never executed. One retry with the rejection explained.
+   reason, never executed. One retry with the rejection explained: a
+   parse rejection now also states the plan grammar in one sentence,
+   shows a minimal skeleton to copy, and, when the offending line was
+   pasted out of the discovery notes, names that directly, since a
+   bare "not a Gherkin step" left the model to repeat the mistake.
 2. **Approve** (human): read the `Then` lines first — they define what
    "done" means for each step, and that is what you are signing off on.
    Edit the `.feature` file freely; it re-validates on load.
@@ -157,14 +161,18 @@ advancing — zero model calls on the happy path:
 
 - A registry of verifiers (`harness/verify.py`) matches `Then` phrasings:
   `exists`, `not_exists`, `contains`, `contains_exactly`, `has_lines`,
-  `covers` (v0.8.1), `indexes` (v0.8.2), and `preserves`: a clause like
+  `indexes` (v0.8.2), and `preserves`: a clause like
   `"work_list.txt" preserves customer, item, and status from step 1`
   names the fields each source record must contribute, and the harness
   harvests those fields' values from the source steps' stored records
   and checks every value survived into the deliverable. Its negative
   counterpart is `excludes`: `"summary.txt" excludes prices from
   step 1` (or `excludes the contents of "internal-notes.txt"`) checks
-  that none of the named values appear in the deliverable.
+  that none of the named values appear in the deliverable. And
+  `accounts_for` is the strict listing-only check: every filename
+  from a listing step must appear in the deliverable, for documents
+  written from names alone, so no listed file can be skipped
+  silently.
   Adding a verifier is a `@verifier(name, pattern)` decorator + a check
   function — the engine never changes.
 - A failed `Then` triggers one bounded step retry with the verifier's
@@ -205,7 +213,11 @@ Gherkin validation, before the plan reaches the user:
 
 - `dangling_file` (ERROR): a Then targets a file no step creates and
   the task doesn't mention — triggers one planner retry with the
-  finding as feedback, mirroring the Gherkin validation flow.
+  finding as feedback, mirroring the Gherkin validation flow. The
+  check covers prose Thens too: a deliverable named only in its Then
+  (issue #48) draws the same ERROR, with feedback to name the file
+  in the step's When, and at execution the step's prompt and a
+  refused write's feedback name that file as the step's output.
 - `value_from_nowhere` (WARN): a Then asserts an exact value appearing
   nowhere in the task or prior steps — computed or invented?
 - `unparseable_check` (WARN): a Then reads like a check but matches no

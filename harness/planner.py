@@ -107,7 +107,7 @@ Feature: Reading guide
   Scenario: Step 2 - Write the guide
     Intent: each entry gives the article's title and a one-sentence summary of its argument, not the article text
     When I read each article from step 1 and write guide.md with one entry per article
-    Then "guide.md" covers the files from step 1
+    Then "guide.md" has one entry for each article from step 1, and each entry gives the article's title and a one-sentence summary of its argument
 
 Task: Build a catalog of the songs in this folder, one entry per song with its length
 Feature: Song catalog
@@ -124,7 +124,7 @@ Feature: Song catalog
   Scenario: Step 4 - Write the catalog
     Intent: one entry per song with its length, covering every song from step 1
     When I write catalog.md with one entry per song from the notes in steps 2 and 3
-    Then "catalog.md" covers the files from step 1
+    Then "catalog.md" has one entry for each song from step 1, with its length as noted in steps 2 and 3
 
 Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
 Feature: Quarterly total
@@ -144,11 +144,13 @@ Feature: Seed packet inventory
   Scenario: Step 2 - Write the inventory
     Intent: each entry names the plant and what it is for, in a file the user can keep
     When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
-    Then "seed-inventory.txt" indexes the files from step 1
+    Then "seed-inventory.txt" has one entry for each packet from step 1, naming the plant and what it is for
 
 In the catalog example, note the shape: the per-item steps only gather,
-and the final step carries the covers check against the listing step.
-Splitting the work across steps never splits away the completeness check.
+and the final step still answers for every song from step 1 in a
+single clause. Splitting the work across steps
+never splits away the completeness obligation, and the obligation is
+never scattered into one clause per file.
 
 """
 
@@ -194,22 +196,25 @@ Rules:
   `"path" exists`, `"path" contains "text"`, `"path" contains exactly "text"`,
   `"path" has 3 lines`. Prefer these over prose — the harness verifies them
   in code after each step, and only falls back to trust for other phrasings.
-- When a step writes a document derived from an earlier step's file listing
-  (a summary, strategy, or report about those files), write its Then as
-  `"out.txt" covers the files from step N` (N = the listing step) — the
-  harness checks the document actually mentions the source files.
-- Do not substitute one `contains` Then per source file for `covers` on
-  a document derived from a listing. Per-file clauses cannot prove the
-  document covers the listing; use the single `covers` clause instead.
+- When a step writes about a listing from the filenames ALONE, without
+  reading the files' contents (a strategy, triage, or sorting plan,
+  often because the task forbids reading contents), write its Then as
+  `"out.txt" accounts for the files from step N` (N = the listing
+  step). The check is strict: every filename from the listing must
+  appear in the document, so no file can be silently skipped.
 - When a step's whole job is to read every file from an earlier listing
   step and compile an index, inventory, or catalog with a short
   description of each file, write its Then as
-  `"out.txt" indexes the files from step N` instead of `covers`. For an
+  `"out.txt" indexes the files from step N`. For an
   `indexes` step the harness builds that file itself: it reads each
   listed file, gets a one-line description of each, and writes the
-  target with one entry per file, so no file can be omitted. Use
-  `covers` when the step itself writes a document derived from a
-  listing in some other way.
+  target with one entry per file, so no file can be omitted. Those
+  descriptions are the harness's own generic one-liners. When each
+  entry must carry specific content from the files (a title, a
+  summary of its argument, a measured length), a generic description
+  cannot promise it: keep the writing with the step itself and state
+  that contract in a prose Then instead, as the reading guide
+  example does.
 - When a step compiles records that earlier steps READ (not listed)
   into a deliverable, and the fields each record must contribute
   matter (the task names them: a customer, an item, a status), write
@@ -223,6 +228,10 @@ Rules:
   its Then as `"out.txt" excludes prices from step N` or
   `"out.txt" excludes the contents of "internal-notes.txt"`. The
   harness checks that none of those values appear in the deliverable.
+- Name every file a step creates in that step's When, not only in its
+  Then. The step executes its When; a deliverable named only in the
+  Then may never be written, because the step was never told to
+  write it.
 - Each step runs under a turn budget that scales with the operations it
   implies: by default a base of 6 turns, plus one turn per file it must
   read beyond that, up to a maximum of 24. If a step would need more
@@ -381,6 +390,60 @@ def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
     return max(base, min(ceiling, ops + _BUDGET_SLACK))
 
 
+_PLAN_SHAPE_FEEDBACK = (
+    "A plan contains only Feature, Scenario, Intent, and Given/When/Then "
+    "lines. Notes and findings are background for writing steps, never "
+    "lines in the plan.\n"
+    "Shape:\n"
+    "  Feature: <name>\n"
+    "    Scenario: Step 1 - <goal>\n"
+    "      When I <action>\n"
+    "      Then <checkable result>"
+)
+
+
+def _normalize_for_matching(text: str) -> str:
+    """Collapse whitespace and case so two texts can be compared
+    without formatting differences getting in the way."""
+    return " ".join((text or "").split()).lower()
+
+
+def _parse_feedback(parse_error: str, response: str,
+                    discovery_notes: str = "") -> str:
+    """The full rejection message for a plan that fails Gherkin parse.
+
+    The parser's error names the symptom; the retry stands a better
+    chance when the message also teaches at the failure point: the
+    grammar in one sentence, a skeleton to copy, and, when the
+    offending line was pasted out of the discovery notes (Tomas's
+    2026-10-08 yard inventory: a findings bullet sitting where a
+    step belonged, and the same mistake on the retry), that
+    confusion named directly.
+    """
+    import re
+    message_parts = [f"That plan was rejected: {parse_error}."]
+    line_match = re.search(r"line (\d+)", parse_error or "")
+    if line_match and discovery_notes:
+        # The parser numbers lines in the fence-stripped text, so
+        # read the offending line from that same text: indexing the
+        # raw response lands one line early whenever the model
+        # wrapped its plan in a Markdown fence.
+        plan_lines = gherkin._strip_fences(response or "").splitlines()
+        line_number = int(line_match.group(1))
+        if 1 <= line_number <= len(plan_lines):
+            offending_line = _normalize_for_matching(
+                plan_lines[line_number - 1])
+            if offending_line and offending_line in \
+                    _normalize_for_matching(discovery_notes):
+                message_parts.append(
+                    "That line came from the discovery notes; "
+                    "do not paste findings into the plan.")
+    message_parts.append(_PLAN_SHAPE_FEEDBACK)
+    message_parts.append(
+        "Return ONLY the corrected Gherkin, no other text.")
+    return "\n".join(message_parts)
+
+
 def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
                  discovery: str = ""
                  ) -> tuple[str | None, list[PlanStep] | str]:
@@ -404,7 +467,7 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
         content = (msg.get("content") or "").strip()
         plan, err = gherkin.parse_feature(content)
         if plan is None:
-            feedback = f"That plan was rejected: {err}."
+            feedback = _parse_feedback(err, content, discovery)
             last_problem = err
         else:
             steps = to_plan_steps(plan)
@@ -420,11 +483,12 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
             if not errors or attempt == 2:
                 return content, steps
             feedback = ("That plan has design flaws: "
-                        + "; ".join(f.detail for f in errors) + ".")
+                        + "; ".join(f.detail for f in errors)
+                        + ". Return ONLY the corrected Gherkin, "
+                        "no other text.")
             last_problem = "; ".join(f.detail for f in errors)
         messages.append({"role": "assistant", "content": content})
-        messages.append({"role": "user", "content":
-                         feedback + " Return ONLY the corrected Gherkin, no other text."})
+        messages.append({"role": "user", "content": feedback})
     return None, last_problem
 
 
@@ -552,8 +616,7 @@ def request_discovery_plan(task: str, cfg: Config, chat_fn
         last_problem = err
         messages.append({"role": "assistant", "content": content})
         messages.append({"role": "user", "content":
-                         f"That plan was rejected: {err}. "
-                         "Return ONLY the corrected Gherkin, no other text."})
+                         _parse_feedback(err, content)})
     return None, last_problem
 
 
@@ -678,13 +741,17 @@ def plan_with_discovery(task: str, cfg: Config, chat_fn=None, on_event=None
 
 @dataclass
 class PlannedRun:
-    status: str  # done | plan_failed | step_failed | model_error
+    status: str  # done | done_on_trust | plan_failed | step_failed | model_error
     answer: str
     steps: list[PlanStep] = field(default_factory=list)
     run_id: str = ""  # .harness/runs/<run_id>/ for this run (v0.8.1)
+    trust_only: list = field(default_factory=list)  # [{"step": id,
+        # "deliverables": [names]}] for steps whose deliverable rests
+        # entirely on attested checks (issue #37)
 
     def plan_dict(self) -> dict:
         return {"run_id": self.run_id,
+                "trust_only": self.trust_only,
                 "steps": [
             {"id": s.id, "instruction": s.instruction, "done_when": s.done_when,
              "intent": s.intent, "budget": s.budget,
@@ -943,6 +1010,52 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     return gate
 
 
+def _then_named_outputs(step: PlanStep) -> list[str]:
+    """Files the step's Thens name as their subject that the step's
+    When never names (issue #48): the deliverable exists only in the
+    clause that checks the work, not in the instruction that does
+    it, so the executing step has no stated place to write. The
+    executor prompt and the blocked-write feedback both name these
+    files explicitly, so the gap is bridged even when a plan that
+    carries it reaches execution. Absence clauses name no output:
+    the file they name is meant to be gone, not written. Neither
+    does a preservation clause: the file it names is meant to be
+    left exactly as it was. A file a step promises to leave alone
+    or to remove is a constraint on the step, never its output,
+    and that holds whichever clause states it: the constraint
+    subjects are collected across the whole step first, so an
+    existence clause naming the same file ("source.txt" exists
+    beside "source.txt" remains unchanged) cannot resurrect it as
+    a write target. "Named in the When" is judged on the
+    When's extracted file mentions and its mv/cp destinations, not
+    on substring matching: a destination like archive/<name> is
+    named by the move even though the joined path never appears
+    literally, and an output whose name sits inside a longer source
+    name is not named at all."""
+    from . import planlint as _planlint
+    from . import verify as _verify
+    named_in_when = _planlint._mentions(step.instruction or "") \
+        | _planlint._move_destinations(step.instruction or "")
+    clauses = [clause.strip()
+               for clause in (step.done_when or "").split("\n")]
+    clauses = [clause for clause in clauses if clause]
+    constrained_subjects: set[str] = set()
+    for clause in clauses:
+        if _verify.absence_intent(clause) \
+                or _verify.preservation_intent(clause):
+            subject_file = _verify.then_subject_file(clause)
+            if subject_file:
+                constrained_subjects.add(subject_file)
+    outputs: list[str] = []
+    for clause in clauses:
+        subject_file = _verify.then_subject_file(clause)
+        if subject_file and subject_file not in named_in_when \
+                and subject_file not in constrained_subjects \
+                and subject_file not in outputs:
+            outputs.append(subject_file)
+    return outputs
+
+
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                      cfg: Config, chat_fn, jail, emit,
                      store=None, only_tools=None) -> bool:
@@ -984,7 +1097,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         existence pass: the stub that founded stage 2 satisfied
         `"file" exists` while promising its content "to be filled in".
         The checks that answer stage 2's suspicion measure content:
-        contains, contains_exactly, covers (against the source items),
+        contains, contains_exactly, indexes (against the source items),
         has_lines. See _grounding_gate."""
         if not thens:
             return False
@@ -993,7 +1106,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
                 c.ok and c.verifier != "attest" for c in res.checks):
             return False
         return any(c.verifier in ("contains", "contains_exactly",
-                                  "covers", "indexes", "has_lines")
+                                  "indexes", "accounts_for", "has_lines")
                    for c in res.checks)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)
@@ -1087,6 +1200,18 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             feedback = "; ".join(c.detail for c in vres.checks
                                   if not c.ok)
 
+    # Issue #48: files the step's Thens name that its When does not.
+    # The prompt presents them as the step's output file, and a
+    # refused write's feedback names them, so a plan that reaches
+    # execution with the gap still gives the step a way to recover.
+    outputs = _then_named_outputs(step)
+    refusal_hint = None
+    if outputs:
+        listed = ", ".join(f"'{o}'" for o in outputs)
+        refusal_hint = (f"HARNESS: this step's output file is "
+                        f"{listed} (named in the step's Then). Write "
+                        f"to that file instead.")
+
     for _ in range(1 + cfg.verify_retries):
         prompt = (f"Overall goal: {task}\n"
                   f"You are executing step {step.id} of {n_steps}. "
@@ -1099,6 +1224,11 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
             prompt += f"Intent of this step: {step.intent}\n"
         prompt += (f"Step: {step.instruction}\n"
                    f"This step is done when: {step.done_when or 'its instruction is complete'}\n")
+        if outputs:
+            listed = ", ".join(f"'{o}'" for o in outputs)
+            prompt += (f"Output file for this step: {listed} (named "
+                       f"in this step's Then). Write this step's "
+                       f"result to that file.\n")
         if contract:
             prompt += contract
         if store is not None and step.output_path:
@@ -1120,7 +1250,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         try:
             r = loop.run(prompt, sub_cfg, chat_fn=chat_fn,
                          on_step=lambda s: emit("step_sub", step, s),
-                         done_gate=gate, only_tools=only_tools)
+                         done_gate=gate, only_tools=only_tools,
+                         refusal_hint=refusal_hint)
         except Exception as e:
             step.status = "failed"
             step.result = f"harness error: {e}"
@@ -1256,18 +1387,38 @@ def execute_plan(task: str, steps: list[PlanStep], cfg: Config, chat_fn=None,
         return PlannedRun(status, answer, steps,
                           run_id=store.run_id if store is not None else "")
 
+    # Issue #37: a run that finished with a deliverable resting
+    # entirely on attested checks must not report plain done. The
+    # trust-only steps are named in the final status, while the run
+    # still counts as completed (see run.py's exit mapping).
+    trust_only: list = []
+    if status == "done":
+        from . import verify as _verify
+        trust_only = _verify.trust_only_steps(steps)
+        if trust_only:
+            status = "done_on_trust"
+
     summary = (f"Overall goal: {task}\nPlan execution ended: {status}.\n"
                + "\n".join(f"Step {s.id} [{s.status}]: {s.instruction}"
                             + (f" -> {s.result[:200]}" if s.result else "")
-                            for s in steps)
-               + '\nSummarize the outcome in 2-4 sentences, starting with "DONE:".')
+                            for s in steps))
+    if trust_only:
+        names = "; ".join(
+            f"step {e['step']} ({', '.join(e['deliverables'])})"
+            for e in trust_only)
+        summary += (f"\nSteps finished on trust: {names}. Their Then "
+                    f"clauses were attested, not machine-checked, so "
+                    f"their deliverables' contents were never verified. "
+                    f"Say plainly which steps finished on trust.")
+    summary += ('\nSummarize the outcome in 2-4 sentences, starting with "DONE:".')
     try:
         msg = chat_fn([{"role": "user", "content": summary}], None)
         answer = (msg.get("content") or "").strip() or "(no summary)"
     except Exception as e:
         answer = f"(summary call failed: {e})"
     return PlannedRun(status, answer, steps,
-                      run_id=store.run_id if store is not None else "")
+                      run_id=store.run_id if store is not None else "",
+                      trust_only=trust_only)
 
 
 def run_planned(task: str, cfg: Config, chat_fn=None, on_event=None) -> PlannedRun:

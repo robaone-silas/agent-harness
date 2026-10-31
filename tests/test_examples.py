@@ -32,59 +32,60 @@ PLAN_OK = """Feature: Anything
 """
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + (f" -- {detail}" if detail and not cond else ""))
-    if not cond:
+def check(name, condition, detail=""):
+    print(("PASS " if condition else "FAIL ") + name + (f" -- {detail}" if detail and not condition else ""))
+    if not condition:
         raise AssertionError(name)
 
 
 def t_examples_present_with_intent():
-    p = planner.build_planner_prompt("organize my stuff", ["list_dir"])
+    prompt = planner.build_planner_prompt("organize my stuff", ["list_dir"])
     check("examples carry the copy-shape instruction",
-          "shape, not" in p and "content" in p.split("shape, not")[1][:20], p[:200])
-    check("recipe example present", "recipe-index.md" in p)
+          "shape, not" in prompt and "content" in prompt.split("shape, not")[1][:20], prompt[:200])
+    check("recipe example present", "recipe-index.md" in prompt)
     check("completeness clause sits on the deliverable step in the example",
-          '"recipe-index.md" indexes the files from step 1' in p)
-    check("archive example present", "notes-2025-03.txt" in p)
+          '"recipe-index.md" indexes the files from step 1' in prompt)
+    check("archive example present", "notes-2025-03.txt" in prompt)
     check("folder created as a folder in the example",
-          '"archive" exists' in p)
+          '"archive" exists' in prompt)
     check("move verified by destination path in the example",
-          '"archive/notes-2025-03.txt" exists' in p)
+          '"archive/notes-2025-03.txt" exists' in prompt)
     check("move uses a real move command in the example",
-          "mv notes-2025-03.txt archive/" in p)
+          "mv notes-2025-03.txt archive/" in prompt)
 
 
 def t_examples_come_before_task_and_digest_stays_last():
-    d = tempfile.mkdtemp(prefix="examples-")
+    temp_directory = tempfile.mkdtemp(prefix="examples-")
     try:
-        Path(d, "real-file.txt").write_text("x")
-        p = planner.build_planner_prompt("organize my stuff", ["list_dir"],
-                                         workspace=d)
-        i_ex = p.index("recipe-index.md")
-        i_digest = p.index("Workspace contents")
-        i_task = p.index("Task: organize my stuff")
+        Path(temp_directory, "real-file.txt").write_text("x")
+        prompt = planner.build_planner_prompt("organize my stuff", ["list_dir"],
+                                              workspace=temp_directory)
+        example_index = prompt.index("recipe-index.md")
+        digest_index = prompt.index("Workspace contents")
+        task_index = prompt.index("Task: organize my stuff")
+        is_ordered = (example_index < digest_index) and (digest_index < task_index)
         check("examples before digest before task",
-              i_ex < i_digest < i_task, f"{i_ex} {i_digest} {i_task}")
+              is_ordered, f"{example_index} {digest_index} {task_index}")
     finally:
-        shutil.rmtree(d)
+        shutil.rmtree(temp_directory)
 
 
 def t_request_plan_still_works_with_examples():
-    d = tempfile.mkdtemp(prefix="examples-")
+    temp_directory = tempfile.mkdtemp(prefix="examples-")
     try:
-        cfg = Config(workspace=d)
-        seen = {}
+        config = Config(workspace=temp_directory)
+        captured_data = {}
 
-        def fake(messages, tool_defs):
-            seen["prompt"] = messages[0]["content"]
+        def fake_chat(messages, tool_definitions):
+            captured_data["prompt"] = messages[0]["content"]
             return {"role": "assistant", "content": PLAN_OK}
 
-        text, steps = planner.request_plan("do a thing", ["list_dir"], fake, cfg)
+        text, steps = planner.request_plan("do a thing", ["list_dir"], fake_chat, config)
         check("plan returned", text is not None and len(steps) == 1)
         check("planner prompt the model saw has the examples",
-              "recipe-index.md" in seen["prompt"])
+              "recipe-index.md" in captured_data["prompt"])
     finally:
-        shutil.rmtree(d)
+        shutil.rmtree(temp_directory)
 
 
 def t_content_shaped_exemplars_use_attested_clauses():
@@ -95,27 +96,27 @@ def t_content_shaped_exemplars_use_attested_clauses():
     # descriptions, which cannot promise those fields. Their Thens
     # state the contract as prose instead. The recipe exemplar, a
     # plain filename and description index, keeps the indexes clause.
-    p = planner.build_planner_prompt("organize my stuff", ["list_dir"])
+    prompt = planner.build_planner_prompt("organize my stuff", ["list_dir"])
     check("guide exemplar states its contract in the Then",
-          '"guide.md" has one entry for each article from step 1' in p
-          and "a one-sentence summary of its argument" in p)
+          '"guide.md" has one entry for each article from step 1' in prompt
+          and "a one-sentence summary of its argument" in prompt)
     check("guide exemplar no longer routes through indexes",
-          '"guide.md" indexes the files from step 1' not in p)
+          '"guide.md" indexes the files from step 1' not in prompt)
     check("catalog exemplar states its contract in the Then",
-          '"catalog.md" has one entry for each song from step 1' in p)
+          '"catalog.md" has one entry for each song from step 1' in prompt)
     check("catalog exemplar no longer routes through indexes",
-          '"catalog.md" indexes the files from step 1' not in p)
+          '"catalog.md" indexes the files from step 1' not in prompt)
     check("seed exemplar states its contract in the Then",
           '"seed-inventory.txt" has one entry for each packet from step 1'
-          in p)
+          in prompt)
     check("seed exemplar no longer routes through indexes",
-          '"seed-inventory.txt" indexes the files from step 1' not in p)
+          '"seed-inventory.txt" indexes the files from step 1' not in prompt)
 
 
 if __name__ == "__main__":
-    for fn in [t_examples_present_with_intent,
-               t_examples_come_before_task_and_digest_stays_last,
-               t_content_shaped_exemplars_use_attested_clauses,
-               t_request_plan_still_works_with_examples]:
-        fn()
+    for test_function in [t_examples_present_with_intent,
+                          t_examples_come_before_task_and_digest_stays_last,
+                          t_content_shaped_exemplars_use_attested_clauses,
+                          t_request_plan_still_works_with_examples]:
+        test_function()
     print("\nAll planner example tests passed.")

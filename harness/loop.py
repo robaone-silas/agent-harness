@@ -98,6 +98,10 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
     result = RunResult(status="done", answer="")
     errors = 0
     last_call_key: tuple | None = None  # (tool_name, canonical args) of previous step
+    # The last call that actually ran and succeeded. A repeat of it never
+    # runs the tool again, so it is supervision, not a tool error, and it
+    # must not consume the consecutive-error budget (issue 49).
+    last_success_key: tuple | None = None
     # What the previous tool interaction was: None (no calls yet), "ok",
     # "error", or "nudged" (repeat-after-success nudge, which asks for DONE:).
     last_outcome: str | None = None
@@ -205,7 +209,14 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
                     last_outcome = "nudged"  # further repeats are errors
                 elif call_key == last_call_key:
                     tool_result = f"ERROR: {prompts.LOOP_BREAKER}"
-                    errors += 1
+                    # A repeat of a call that already succeeded never ran
+                    # the tool again, so it is not a tool error and does
+                    # not count toward the error limit: the model keeps
+                    # its remaining turns to take the different action
+                    # the breaker suggests. A repeat of a failed call
+                    # still counts, because that loop is failing work.
+                    if call_key != last_success_key:
+                        errors += 1
                     last_outcome = "error"
                 else:
                     last_call_key = call_key
@@ -230,6 +241,7 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
                         last_outcome = "error"
                     else:
                         last_outcome = "ok"
+                        last_success_key = call_key
                         errors = 0
                         succeeded = True
                         error_pushback_sent = False

@@ -20,6 +20,7 @@ approval flow.
 """
 from __future__ import annotations
 
+import re as _re
 from dataclasses import dataclass, field, replace
 
 from . import gherkin
@@ -27,6 +28,19 @@ from . import graphcheck as _graphcheck
 from . import indexing as _indexing
 from . import loop
 from .config import Config
+
+
+def _file_entry_size(path) -> int:
+    try:
+        return path.stat().st_size
+    except OSError:
+        return 0
+
+
+def _format_digest_entry(path) -> str:
+    if path.is_dir():
+        return f"- {path.name}/ (folder)"
+    return f"- {path.name} ({_file_entry_size(path)} bytes)"
 
 
 def workspace_digest(workspace: str | None, limit: int = 100) -> str:
@@ -46,28 +60,14 @@ def workspace_digest(workspace: str | None, limit: int = 100) -> str:
         entries = sorted(Path(workspace).iterdir(), key=lambda p: p.name)
     except OSError:
         return ""
-    lines: list[str] = []
-    total = 0
-    for p in entries:
-        if p.name == ".harness":
-            continue
-        total += 1
-        if len(lines) >= limit:
-            continue
-        if p.is_dir():
-            lines.append(f"- {p.name}/ (folder)")
-        else:
-            try:
-                size = p.stat().st_size
-            except OSError:
-                size = 0
-            lines.append(f"- {p.name} ({size} bytes)")
-    if total == 0:
+    visible = [p for p in entries if p.name != ".harness"]
+    if not visible:
         body = "(the workspace folder is currently empty)"
     else:
+        lines = [_format_digest_entry(p) for p in visible[:limit]]
         body = "\n".join(lines)
-        if total > len(lines):
-            body += f"\n- ... and {total - len(lines)} more entries"
+        if len(visible) > limit:
+            body += f"\n- ... and {len(visible) - limit} more entries"
     return ("\nWorkspace contents right now (listed by the harness itself):\n"
             + body
             + "\nPlan against what is actually here: do not invent files, "
@@ -327,6 +327,37 @@ def to_plan_steps(plan: gherkin.FeaturePlan) -> list[PlanStep]:
 _BUDGET_SLACK = 2
 
 
+_RANGE_CONNECTORS = frozenset({"through", "to", "-", "–", "—"})
+
+
+def _expand_step_range(start: int, end: int) -> set[int]:
+    lo, hi = min(start, end), max(start, end)
+    if hi - lo <= 64:
+        return set(range(lo, hi + 1))
+    return {start, end}
+
+
+def _parse_step_segment_tokens(tokens: list[str]) -> set[int]:
+    refs: set[int] = set()
+    prev: int | None = None
+    connector: str | None = None
+    for tok in tokens:
+        if not tok.isdigit():
+            connector = tok.lower()
+            continue
+        n = int(tok)
+        if prev is not None and connector in _RANGE_CONNECTORS:
+            refs.update(_expand_step_range(prev, n))
+        else:
+            refs.add(n)
+            if prev is not None:
+                refs.add(prev)
+        prev, connector = n, None
+    if prev is not None:
+        refs.add(prev)
+    return refs
+
+
 def _step_refs(text: str) -> set[int]:
     """Step numbers a step's text draws on (issue #32).
 
@@ -348,45 +379,34 @@ def _step_refs(text: str) -> set[int]:
         _re.IGNORECASE)
     token = _re.compile(r"\d+|through|to|and|,|[-–—]", _re.IGNORECASE)
     for m in segment.finditer(text):
-        prev, connector = None, None
-        for tok in token.findall(m.group(1)):
-            if tok.isdigit():
-                n = int(tok)
-                if prev is not None and connector in (
-                        "through", "to", "-", "–", "—"):
-                    lo, hi = min(prev, n), max(prev, n)
-                    # A plan has few steps; a span far beyond that is
-                    # prose, not a range. Count its ends only.
-                    refs.update(range(lo, hi + 1) if hi - lo <= 64
-                                else (prev, n))
-                else:
-                    refs.add(n)
-                    if prev is not None:
-                        refs.add(prev)
-                prev, connector = n, None
-            else:
-                connector = tok.lower()
-        if prev is not None:
-            refs.add(prev)
+        tokens = token.findall(m.group(1))
+        refs.update(_parse_step_segment_tokens(tokens))
     return refs
+
+
+def _step_quoted_operands(text: str) -> set[str]:
+    import re as _re
+    return {t for t in _re.findall(r'"([^"\n]+)"', text)
+            if t.strip() and not any(c.isspace() for c in t)}
+
+
+def _prior_step_cost(prior: PlanStep) -> int:
+    return 1 + len(prior.source_items or [])
 
 
 def step_budget(step: PlanStep, steps: list[PlanStep], cfg=None) -> int:
     """Effective turn budget for one plan step, from its planned work."""
-    import re as _re
     base = getattr(cfg, "step_max_steps", 6) if cfg is not None else 6
     ceiling = (getattr(cfg, "step_budget_ceiling", 24)
                if cfg is not None else 24)
     text = "\n".join([step.given or "", step.intent or "",
                       step.instruction or "", step.done_when or ""])
-    operands = {t for t in _re.findall(r'"([^"\n]+)"', text)
-                if t.strip() and not any(c.isspace() for c in t)}
-    ops = len(operands)
+    ops = len(_step_quoted_operands(text))
     by_id = {s.id: s for s in steps}
     for ref in _step_refs(text):
         prior = by_id.get(ref)
         if prior is not None and prior.id < step.id:
-            ops += 1 + len(prior.source_items or [])
+            ops += _prior_step_cost(prior)
     return max(base, min(ceiling, ops + _BUDGET_SLACK))
 
 
@@ -492,20 +512,27 @@ def request_plan(task: str, tool_names: list[str], chat_fn, cfg: Config,
     return None, last_problem
 
 
-def _chat_and_tools(cfg: Config, chat_fn=None):
+def _default_chat_fn(cfg: Config):
     from . import client as _client
+
+    def chat_fn(messages, tool_defs):
+        tools = _client.to_ollama_tools(tool_defs) if tool_defs else None
+        return _client.chat(
+            cfg.endpoint, cfg.model, messages,
+            tools=tools,
+            temperature=cfg.temperature, top_p=cfg.top_p,
+            timeout=cfg.request_timeout)
+
+    return chat_fn
+
+
+def _chat_and_tools(cfg: Config, chat_fn=None):
     from . import tools as _tools
-    if chat_fn is None:
-        def chat_fn(messages, tool_defs):
-            return _client.chat(
-                cfg.endpoint, cfg.model, messages,
-                tools=_client.to_ollama_tools(tool_defs) if tool_defs else None,
-                temperature=cfg.temperature, top_p=cfg.top_p,
-                timeout=cfg.request_timeout)
+    effective_chat_fn = chat_fn or _default_chat_fn(cfg)
     jail = _tools.Jail(cfg.workspace)
     registry = _tools.make_tools(jail, cfg.blocked_substrings, cfg.exec_timeout,
                                  cfg.max_output_chars)
-    return chat_fn, jail, registry
+    return effective_chat_fn, jail, registry
 
 
 def propose(task: str, cfg: Config, chat_fn=None
@@ -528,6 +555,12 @@ def propose(task: str, cfg: Config, chat_fn=None
 
 READ_ONLY_TOOLS = ("list_dir", "read_file", "grep_files")
 
+_EXHAUSTIVE_WORDS_RE = _re.compile(
+    r"\b(list|listing|inventory|index|catalogue|catalog)\b", _re.IGNORECASE)
+_EXHAUSTIVE_SCOPE_RE = _re.compile(
+    r"\b(all|every|each)\b[^.\n]{0,40}\b(files?|documents?|papers?|records?)\b",
+    _re.IGNORECASE)
+
 
 def _is_exhaustive_task(task: str) -> bool:
     """True when the task asks for an account of the whole workspace:
@@ -536,14 +569,29 @@ def _is_exhaustive_task(task: str) -> bool:
     root-level file potentially in scope, so discovery for them must be
     exhaustive rather than a sample (issue #6). Category, strategy, and
     value tasks carry none of these cues and keep sampling."""
-    import re
     low = (task or "").lower()
-    if re.search(r"\b(list|listing|inventory|index|catalogue|catalog)\b",
-                 low):
-        return True
-    return bool(re.search(
-        r"\b(all|every|each)\b[^.\n]{0,40}"
-        r"\b(files?|documents?|papers?|records?)\b", low))
+    return bool(_EXHAUSTIVE_WORDS_RE.search(low) or _EXHAUSTIVE_SCOPE_RE.search(low))
+
+
+_EXHAUSTIVE_STEERING = (
+    "- This task is exhaustive: it asks for a list, an "
+    "inventory, or an index, or for all or every file. "
+    "Sampling is not acceptable for this task.\n"
+    "- Start with a listing step that lists the files at "
+    "the workspace root.\n"
+    "- Account for every file at the workspace root: each "
+    "one must be read, searched, named in the plan, or "
+    "explicitly excluded with a reason. No root file may "
+    "be left unaccounted for."
+)
+
+_SAMPLING_STEERING = (
+    "- Sampling is acceptable for this task: it asks what "
+    "categories, a strategy, or values should be, not for an "
+    "account of every file. Read the files most likely to "
+    "decide the plan's categories or values; do not read "
+    "everything."
+)
 
 
 def _discovery_steering(task: str) -> str:
@@ -555,20 +603,8 @@ def _discovery_steering(task: str) -> str:
     withdrawn for them, because a sample silently drops files the task
     asked about (issue #6, Tomas's omitted water-heater manual)."""
     if _is_exhaustive_task(task):
-        return ("- This task is exhaustive: it asks for a list, an "
-                "inventory, or an index, or for all or every file. "
-                "Sampling is not acceptable for this task.\n"
-                "- Start with a listing step that lists the files at "
-                "the workspace root.\n"
-                "- Account for every file at the workspace root: each "
-                "one must be read, searched, named in the plan, or "
-                "explicitly excluded with a reason. No root file may "
-                "be left unaccounted for.")
-    return ("- Sampling is acceptable for this task: it asks what "
-            "categories, a strategy, or values should be, not for an "
-            "account of every file. Read the files most likely to "
-            "decide the plan's categories or values; do not read "
-            "everything.")
+        return _EXHAUSTIVE_STEERING
+    return _SAMPLING_STEERING
 
 
 def build_discovery_prompt(task: str, workspace: str | None = None) -> str:
@@ -784,40 +820,52 @@ FRAME_TEXT = (
 )
 
 
+def _format_outline_step_result(step: PlanStep) -> str:
+    body = step.result or ""
+    if body.strip().upper().startswith("DONE:"):
+        body = body.strip()[5:].strip()
+    if body:
+        return f"    Result: {step.result[:200]}"
+    if step.tool_summary:
+        return f"    Result: (no summary given) {step.tool_summary}"
+    if step.result:
+        return f"    Result: {step.result[:200]}"
+    return ""
+
+
+def _format_outline_step(step: PlanStep, current_id: int) -> list[str]:
+    lines = []
+    if step.id == current_id:
+        mark = "YOUR STEP"
+    elif step.status == "done":
+        mark = "done"
+    else:
+        mark = "pending"
+
+    title = _re.sub(r"^Step\s+\d+\s*[-:]\s*", "", (step.title or "").strip())
+    label = title or (step.instruction.split("\n")[0][:100] if step.instruction else "")
+    lines.append(f"  Step {step.id} [{mark}] {label}")
+
+    if step.id != current_id and step.instruction and title:
+        lines.append(f"    When: {step.instruction.split(chr(10))[0][:160]}")
+
+    if step.status == "done" and step.id != current_id:
+        res_line = _format_outline_step_result(step)
+        if res_line:
+            lines.append(res_line)
+        if step.output_path:
+            lines.append(f"    Full output: {step.output_path}")
+    return lines
+
+
 def _plan_outline(steps: list[PlanStep], current_id: int) -> str:
     """The shape of the whole plan, one line per step, with statuses.
 
     Done steps are annotated with their (short) result and, when the run
     store is active, the exact file holding their full output."""
-    import re as _re
     lines = ["The plan:"]
     for s in steps:
-        if s.id == current_id:
-            mark = "YOUR STEP"
-        elif s.status == "done":
-            mark = "done"
-        else:
-            mark = "pending"
-        title = _re.sub(r"^Step\s+\d+\s*[-:]\s*", "", (s.title or "").strip())
-        label = title or (s.instruction.split("\n")[0][:100] if s.instruction else "")
-        lines.append(f"  Step {s.id} [{mark}] {label}")
-        if s.id != current_id and s.instruction and title:
-            lines.append(f"    When: {s.instruction.split(chr(10))[0][:160]}")
-        if s.status == "done" and s.id != current_id:
-            body = s.result or ""
-            if body.strip().upper().startswith("DONE:"):
-                body = body.strip()[5:].strip()
-            if body:
-                lines.append(f"    Result: {s.result[:200]}")
-            elif s.tool_summary:
-                # The model answered a bare "DONE:" — the summary channel
-                # carried nothing. The harness computes a factual line from
-                # its own record instead of leaving a blank.
-                lines.append(f"    Result: (no summary given) {s.tool_summary}")
-            elif s.result:
-                lines.append(f"    Result: {s.result[:200]}")
-            if s.output_path:
-                lines.append(f"    Full output: {s.output_path}")
+        lines.extend(_format_outline_step(s, current_id))
     return "\n".join(lines) + "\n"
 
 
@@ -834,7 +882,9 @@ def _index_describe(chat_fn, name: str, content: str) -> str:
                       None)
     except Exception:
         return ""
-    return (msg.get("content") or "") if isinstance(msg, dict) else ""
+    if not isinstance(msg, dict):
+        return ""
+    return (msg.get("content") or "")
 
 
 def _graph_contract_block(task: str, step: PlanStep,
@@ -878,6 +928,96 @@ def _graph_contract_block(task: str, step: PlanStep,
     return "\n".join(lines) + "\n"
 
 
+def _sub_step_names_prior(sub_step, priors: list[str]) -> bool:
+    import json as _json
+    if not (sub_step.tool and sub_step.args):
+        return False
+    dumped = _json.dumps(sub_step.args, default=str)
+    return any(p in dumped for p in priors)
+
+
+def _find_prior_read_index(sub_steps, priors: list[str]) -> int | None:
+    return next((i for i, s in enumerate(sub_steps) if _sub_step_names_prior(s, priors)), None)
+
+
+def _unreferenced_priors_feedback(step: PlanStep, priors: list[str]) -> str:
+    return (f"HARNESS: you are finishing step {step.id} without having read "
+            f"the output of the earlier step(s) this plan builds on: "
+            f"{', '.join(priors)}. Those files are the record of what the "
+            f"earlier steps actually produced. Read the file now with "
+            f"read_file and redo this step using its real contents. If this "
+            f"step genuinely does not depend on that output, answer DONE: "
+            f"again and say why in one sentence. Your own step's output "
+            f"file ({step.output_path}) is not one of these sources: the "
+            f"harness writes it after you finish, it does not exist yet, "
+            f"so do not try to read it.")
+
+
+def _collect_covers_targets_and_items(step: PlanStep, steps: list[PlanStep]) -> tuple[list[str], list[str]]:
+    from . import verify as _verify
+    by_id = {s.id: s for s in steps}
+    items: list[str] = []
+    targets: list[str] = []
+    for then in (step.done_when or "").split("\n"):
+        then = then.strip()
+        if not then or _verify.match_verifier(then) != "covers":
+            continue
+        m = _re.search(r"step\s+(\d+)", then)
+        if not m:
+            continue
+        src = by_id.get(int(m.group(1)))
+        if src is None:
+            continue
+        parsed = _verify.parse_then(then)
+        if parsed and parsed[1]:
+            targets.append(parsed[1])
+        for item in src.source_items or []:
+            if item not in items:
+                items.append(item)
+    return targets, items
+
+
+def _find_missing_covered_items(items: list[str], steps: list[PlanStep],
+                                current_step: PlanStep, sub_steps) -> list[str]:
+    import json as _json
+    blobs = set()
+    for s in steps:
+        if s.id < current_step.id:
+            blobs.update(s.touched_args or set())
+    for s in sub_steps:
+        if s.tool and s.args:
+            blobs.add(_json.dumps(s.args, default=str))
+    return [i for i in items if not any(i in b for b in blobs)]
+
+
+def _missing_covers_feedback(targets: list[str], missing: list[str]) -> str:
+    claim = f'"{targets[0]}" covers' if targets else "This step covers"
+    return (f"HARNESS: {claim} the files from an earlier "
+            f"listing step, but these files have not been read "
+            f"yet in this run: {', '.join(missing)}. Work about "
+            f"a file must come from its actual contents, not "
+            f"from its name in a list. Read each named file now "
+            f"with read_file, then redo this step from what "
+            f"they contain. If a named file genuinely is not a "
+            f"source for this step, answer DONE: again and say "
+            f"why in one sentence.")
+
+
+def _has_work_after_prior_read(sub_steps, read_idx: int, priors: list[str]) -> bool:
+    return any(s.tool and not _sub_step_names_prior(s, priors) for s in sub_steps[read_idx + 1:])
+
+
+def _unchanged_after_read_feedback(step: PlanStep, priors: list[str]) -> str:
+    return (f"HARNESS: you read {', '.join(priors)} but you have not changed "
+            f"anything since reading it. Redo this step now using what the "
+            f"file contains: write or edit the deliverable from its real "
+            f"contents. If nothing genuinely needs to change, answer DONE: "
+            f"again and say why in one sentence. Your own step's output "
+            f"file ({step.output_path}) is written by the harness after "
+            f"you finish and does not exist yet; it is not a source to "
+            f"read.")
+
+
 def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     """Build the DONE gate for one step (v0.8.1), or None when the step has
     no completed prior steps with stored outputs.
@@ -917,95 +1057,27 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
         return None
 
     def gate(sub_steps) -> str | None:
-        import json as _json
-
-        def names_prior(s) -> bool:
-            return bool(s.tool and s.args and any(
-                p in _json.dumps(s.args, default=str) for p in priors))
-
-        read_idx = next((i for i, s in enumerate(sub_steps) if names_prior(s)),
-                        None)
+        read_idx = _find_prior_read_index(sub_steps, priors)
         if read_idx is None:
-            # Stage 1: never touched the source at all.
-            return (f"HARNESS: you are finishing step {step.id} without having read "
-                    f"the output of the earlier step(s) this plan builds on: "
-                    f"{', '.join(priors)}. Those files are the record of what the "
-                    f"earlier steps actually produced. Read the file now with "
-                    f"read_file and redo this step using its real contents. If this "
-                    f"step genuinely does not depend on that output, answer DONE: "
-                    f"again and say why in one sentence. Your own step's output "
-                    f"file ({step.output_path}) is not one of these sources: the "
-                    f"harness writes it after you finish, it does not exist yet, "
-                    f"so do not try to read it.")
-        # Coverage stage (issue #17): a covers clause claims the
-        # deliverable accounts for a listing step's files. Compare those
-        # items against everything read so far in the run: prior steps'
-        # recorded calls (touched_args) plus this sub-run's calls.
-        import re as _re
-        from . import verify as _verify
-        by_id = {s.id: s for s in steps}
-        items: list[str] = []
-        targets: list[str] = []
-        for then in (step.done_when or "").split("\n"):
-            then = then.strip()
-            if not then or _verify.match_verifier(then) != "covers":
-                continue
-            m = _re.search(r"step\s+(\d+)", then)
-            if not m:
-                continue
-            src = by_id.get(int(m.group(1)))
-            if src is None:
-                continue
-            parsed = _verify.parse_then(then)
-            if parsed and parsed[1]:
-                targets.append(parsed[1])
-            for item in src.source_items or []:
-                if item not in items:
-                    items.append(item)
+            return _unreferenced_priors_feedback(step, priors)
+
+        targets, items = _collect_covers_targets_and_items(step, steps)
         if items:
-            blobs = set()
-            for s in steps:
-                if s.id < step.id:
-                    blobs.update(s.touched_args or set())
-            for s in sub_steps:
-                if s.tool and s.args:
-                    blobs.add(_json.dumps(s.args, default=str))
-            missing = [i for i in items
-                       if not any(i in b for b in blobs)]
+            missing = _find_missing_covered_items(items, steps, step, sub_steps)
             if missing:
-                claim = (f'"{targets[0]}" covers' if targets
-                         else "This step covers")
-                return (f"HARNESS: {claim} the files from an earlier "
-                        f"listing step, but these files have not been read "
-                        f"yet in this run: {', '.join(missing)}. Work about "
-                        f"a file must come from its actual contents, not "
-                        f"from its name in a list. Read each named file now "
-                        f"with read_file, then redo this step from what "
-                        f"they contain. If a named file genuinely is not a "
-                        f"source for this step, answer DONE: again and say "
-                        f"why in one sentence.")
-        if any(s.tool and not names_prior(s) for s in sub_steps[read_idx + 1:]):
-            return None  # real work happened after the read: grounded
-        # Before demanding the redo, look at the deliverable (surgical
-        # fix): if the step's own Thens all machine-check as passing
-        # right now, a redo can only risk making things worse.
+                return _missing_covers_feedback(targets, missing)
+
+        if _has_work_after_prior_read(sub_steps, read_idx, priors):
+            return None
+
         if verify_now is not None:
             try:
                 if verify_now():
                     return None
             except Exception:
-                pass  # a broken check suppresses nothing
-        # Stage 2 (the 20261002-192409 field sequence): the source was read,
-        # possibly only because stage 1 forced it, and then DONE was
-        # re-asserted with nothing changed. Reading is not redoing.
-        return (f"HARNESS: you read {', '.join(priors)} but you have not changed "
-                f"anything since reading it. Redo this step now using what the "
-                f"file contains: write or edit the deliverable from its real "
-                f"contents. If nothing genuinely needs to change, answer DONE: "
-                f"again and say why in one sentence. Your own step's output "
-                f"file ({step.output_path}) is written by the harness after "
-                f"you finish and does not exist yet; it is not a source to "
-                f"read.")
+                pass
+
+        return _unchanged_after_read_feedback(step, priors)
 
     return gate
 
@@ -1041,19 +1113,68 @@ def _then_named_outputs(step: PlanStep) -> list[str]:
     clauses = [clause for clause in clauses if clause]
     constrained_subjects: set[str] = set()
     for clause in clauses:
-        if _verify.absence_intent(clause) \
-                or _verify.preservation_intent(clause):
+        if _verify.absence_intent(clause) or _verify.preservation_intent(clause):
             subject_file = _verify.then_subject_file(clause)
             if subject_file:
                 constrained_subjects.add(subject_file)
     outputs: list[str] = []
     for clause in clauses:
         subject_file = _verify.then_subject_file(clause)
-        if subject_file and subject_file not in named_in_when \
-                and subject_file not in constrained_subjects \
-                and subject_file not in outputs:
-            outputs.append(subject_file)
+        if not subject_file:
+            continue
+        if subject_file in named_in_when or subject_file in constrained_subjects or subject_file in outputs:
+            continue
+        outputs.append(subject_file)
     return outputs
+
+
+_CONTENT_BEARING_VERIFIERS = frozenset({
+    "contains", "contains_exactly", "indexes", "accounts_for", "has_lines"
+})
+
+
+def _is_content_bearing_pass(res) -> bool:
+    if not res.checks:
+        return False
+    if any(not c.ok or c.verifier == "attest" for c in res.checks):
+        return False
+    return any(c.verifier in _CONTENT_BEARING_VERIFIERS for c in res.checks)
+
+
+def _record_attempt_metrics(step: PlanStep, attempts: list[dict]):
+    if not attempts:
+        return
+    import json as _json
+    for att in attempts:
+        for s in att.get("sub_steps") or []:
+            if s.tool and s.args:
+                step.touched_args.add(_json.dumps(s.args, default=str))
+
+    last_sub = attempts[-1].get("sub_steps") or []
+    counts: dict[str, int] = {}
+    n_lines = 0
+    for s in last_sub:
+        if s.tool:
+            counts[s.tool] = counts.get(s.tool, 0) + 1
+            n_lines += len((s.result or "").splitlines())
+    if counts:
+        step.tool_summary = (
+            ", ".join(f"{t} x{n}" for t, n in counts.items())
+            + f"; {n_lines} lines of tool output")
+
+
+def _write_step_to_store(store, step: PlanStep, attempts: list[dict], status: str):
+    if store is None:
+        return
+    try:
+        store.write_step(
+            step_id=step.id, instruction=step.instruction,
+            given=step.given, done_when=step.done_when,
+            answer=step.result, sub_steps=[], status=status,
+            verify_checks=step.verify, verify_waived=step.verify_waived,
+            attempts=attempts or None)
+    except Exception:
+        pass
 
 
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
@@ -1102,12 +1223,7 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
         if not thens:
             return False
         res = _verify.verify_step(thens, vctx)
-        if not res.checks or not all(
-                c.ok and c.verifier != "attest" for c in res.checks):
-            return False
-        return any(c.verifier in ("contains", "contains_exactly",
-                                  "indexes", "accounts_for", "has_lines")
-                   for c in res.checks)
+        return _is_content_bearing_pass(res)
 
     gate = _grounding_gate(step, steps, verify_now=verify_now)
     # Experimental: the step's plan-graph node contract rides in its
@@ -1122,37 +1238,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     sub_cfg = replace(cfg, max_steps=step.budget)
 
     def persist(status: str):
-        if attempts:
-            # Record what this step's attempts touched, for the read
-            # coverage gate stage (issue #17): later steps compare a
-            # covers clause's source items against the run's reads.
-            import json as _json
-            for att in attempts:
-                for s in att.get("sub_steps") or []:
-                    if s.tool and s.args:
-                        step.touched_args.add(
-                            _json.dumps(s.args, default=str))
-            counts: dict[str, int] = {}
-            n_lines = 0
-            for s in attempts[-1].get("sub_steps") or []:
-                if s.tool:
-                    counts[s.tool] = counts.get(s.tool, 0) + 1
-                    n_lines += len((s.result or "").splitlines())
-            if counts:
-                step.tool_summary = (
-                    ", ".join(f"{t} x{n}" for t, n in counts.items())
-                    + f"; {n_lines} lines of tool output")
-        if store is None:
-            return
-        try:
-            store.write_step(
-                step_id=step.id, instruction=step.instruction,
-                given=step.given, done_when=step.done_when,
-                answer=step.result, sub_steps=[], status=status,
-                verify_checks=step.verify, verify_waived=step.verify_waived,
-                attempts=attempts or None)
-        except Exception:
-            pass  # the store is a record, never a reason to fail real work
+        _record_attempt_metrics(step, attempts)
+        _write_step_to_store(store, step, attempts, status)
 
     # Indexing primitive: when the step carries an `indexes` clause,
     # the harness tries to build the target itself (enumerate the

@@ -63,8 +63,9 @@ def t_examples_come_before_task_and_digest_stays_last():
         i_ex = p.index("recipe-index.md")
         i_digest = p.index("Workspace contents")
         i_task = p.index("Task: organize my stuff")
+        is_ordered = (i_ex < i_digest) and (i_digest < i_task)
         check("examples before digest before task",
-              i_ex < i_digest < i_task, f"{i_ex} {i_digest} {i_task}")
+              is_ordered, f"{i_ex} {i_digest} {i_task}")
     finally:
         shutil.rmtree(d)
 

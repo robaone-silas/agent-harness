@@ -126,6 +126,17 @@ Feature: Song catalog
     When I write catalog.md with one entry per song from the notes in steps 2 and 3
     Then "catalog.md" has one entry for each song from step 1, with its length as noted in steps 2 and 3
 
+Task: Make a volunteer roster from the sign-up sheets: each entry gives the volunteer, the role, and the shift, but no phone numbers
+Feature: Volunteer roster
+  Scenario: Step 1 - Read the sign-up sheets
+    When I read the sign-up sheets in the folder and note each volunteer, role, shift, and phone number
+    Then the output lists each volunteer with role, shift, and phone number
+  Scenario: Step 2 - Write the roster
+    Intent: each entry gives the volunteer, the role, and the shift, with no phone numbers
+    When I write roster.txt with one entry per volunteer from step 1
+    Then "roster.txt" preserves volunteer, role, and shift from step 1
+    And "roster.txt" excludes phone numbers from step 1
+
 Task: Add up the amounts in jan.txt, feb.txt, and mar.txt and put the total in total.txt
 Feature: Quarterly total
   Scenario: Step 1 - Read the monthly files

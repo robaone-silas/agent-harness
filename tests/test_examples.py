@@ -22,7 +22,9 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from harness import gherkin as gherkin_mod
 from harness import planner
+from harness import verify as verify_mod
 from harness.config import Config
 
 PLAN_OK = """Feature: Anything
@@ -113,10 +115,49 @@ def t_content_shaped_exemplars_use_attested_clauses():
           '"seed-inventory.txt" indexes the files from step 1' not in prompt)
 
 
+def t_compile_exemplar_guards_with_preserves_and_excludes():
+    # Issue #37 slice 3: the planner prompt must show a compile step
+    # guarded by preserves and excludes, so a small model has a
+    # concrete shape to copy. The exemplar's content is deliberately
+    # unlike the repair-shop tasks that motivated #37: copy the shape,
+    # not the content. Both clauses must parse to their verifiers,
+    # not fall back to attestation, or the exemplar teaches trust.
+    prompt = planner.build_planner_prompt("organize my stuff", ["list_dir"])
+    check("compile exemplar present", "roster.txt" in prompt)
+    preserves_clause = '"roster.txt" preserves volunteer, role, and shift from step 1'
+    excludes_clause = '"roster.txt" excludes phone numbers from step 1'
+    check("exemplar compile step carries a preserves clause",
+          preserves_clause in prompt)
+    check("exemplar compile step carries an excludes clause",
+          excludes_clause in prompt)
+    parsed_preserves = verify_mod.parse_then(preserves_clause)
+    check("exemplar preserves clause parses to the preserves verifier",
+          parsed_preserves is not None and parsed_preserves[0] == "preserves",
+          repr(parsed_preserves))
+    check("exemplar preserves clause targets the deliverable",
+          parsed_preserves is not None and parsed_preserves[1] == "roster.txt",
+          repr(parsed_preserves))
+    parsed_excludes = verify_mod.parse_then(excludes_clause)
+    check("exemplar excludes clause parses to the excludes verifier",
+          parsed_excludes is not None and parsed_excludes[0] == "excludes",
+          repr(parsed_excludes))
+    check("exemplar names its deliverable in the compile When",
+          "write roster.txt with one entry per volunteer from step 1" in prompt)
+    roster_feature_start = prompt.index("Feature: Volunteer roster")
+    next_task_index = prompt.index("Task: Add up the amounts", roster_feature_start)
+    parsed_plan, parse_error = gherkin_mod.parse_feature(prompt[roster_feature_start:next_task_index])
+    check("exemplar plan parses as valid Gherkin", parsed_plan is not None, parse_error)
+    compile_step = parsed_plan.steps[1] if parsed_plan is not None else None
+    check("exemplar compile step has two checkable Thens",
+          compile_step is not None and len(compile_step.then) == 2,
+          repr(compile_step.then if compile_step else None))
+
+
 if __name__ == "__main__":
     for test_function in [t_examples_present_with_intent,
                           t_examples_come_before_task_and_digest_stays_last,
                           t_content_shaped_exemplars_use_attested_clauses,
+                          t_compile_exemplar_guards_with_preserves_and_excludes,
                           t_request_plan_still_works_with_examples]:
         test_function()
     print("\nAll planner example tests passed.")

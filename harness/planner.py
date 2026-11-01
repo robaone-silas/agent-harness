@@ -20,6 +20,7 @@ approval flow.
 """
 from __future__ import annotations
 
+import logging
 import re as _re
 from dataclasses import dataclass, field, replace
 
@@ -28,6 +29,8 @@ from . import graphcheck as _graphcheck
 from . import indexing as _indexing
 from . import loop
 from .config import Config
+
+logger = logging.getLogger(__name__)
 
 
 def _file_entry_size(path) -> int:
@@ -348,6 +351,23 @@ def _expand_step_range(start: int, end: int) -> set[int]:
     return {start, end}
 
 
+def _add_step_token(step_references: set[int], step_number: int,
+                    previous_step_number: int | None,
+                    connector: str | None) -> None:
+    """Fold one digit token into the referenced set (issue #62).
+
+    A range connector after a previous step expands the whole span;
+    anything else names the step itself, plus the previous step when
+    one is pending (a list member the loop has not flushed yet).
+    """
+    if previous_step_number is not None and connector in _RANGE_CONNECTORS:
+        step_references.update(_expand_step_range(previous_step_number, step_number))
+        return
+    step_references.add(step_number)
+    if previous_step_number is not None:
+        step_references.add(previous_step_number)
+
+
 def _parse_step_segment_tokens(tokens: list[str]) -> set[int]:
     step_references: set[int] = set()
     previous_step_number: int | None = None
@@ -357,16 +377,28 @@ def _parse_step_segment_tokens(tokens: list[str]) -> set[int]:
             connector = token.lower()
             continue
         step_number = int(token)
-        if previous_step_number is not None and connector in _RANGE_CONNECTORS:
-            step_references.update(_expand_step_range(previous_step_number, step_number))
-        else:
-            step_references.add(step_number)
-            if previous_step_number is not None:
-                step_references.add(previous_step_number)
+        _add_step_token(step_references, step_number,
+                        previous_step_number, connector)
         previous_step_number, connector = step_number, None
     if previous_step_number is not None:
         step_references.add(previous_step_number)
     return step_references
+
+
+_STEP_SINGULAR_PATTERN = _re.compile(r"\bstep\s+(\d+)", _re.IGNORECASE)
+_STEP_SEGMENT_PATTERN = _re.compile(
+    r"\bsteps?\s+(\d+(?:(?:\s*(?:,|and|through|to|[-–—])\s*)+\d+)+)",
+    _re.IGNORECASE)
+_STEP_TOKEN_PATTERN = _re.compile(r"\d+|through|to|and|,|[-–—]", _re.IGNORECASE)
+
+
+def _step_refs_from_segments(text: str) -> set[int]:
+    """Step numbers named by plural list and range segments (issue #62)."""
+    segment_references: set[int] = set()
+    for segment_match in _STEP_SEGMENT_PATTERN.finditer(text):
+        tokens = _STEP_TOKEN_PATTERN.findall(segment_match.group(1))
+        segment_references.update(_parse_step_segment_tokens(tokens))
+    return segment_references
 
 
 def _step_refs(text: str) -> set[int]:
@@ -382,16 +414,8 @@ def _step_refs(text: str) -> set[int]:
     in it, a list counts each member: a referenced prior step is
     read once however it was named.
     """
-    import re as _re
-    step_references = {int(matched_step) for matched_step in _re.findall(r"\bstep\s+(\d+)", text,
-                                        flags=_re.IGNORECASE)}
-    segment_pattern = _re.compile(
-        r"\bsteps?\s+(\d+(?:(?:\s*(?:,|and|through|to|[-–—])\s*)+\d+)+)",
-        _re.IGNORECASE)
-    token_pattern = _re.compile(r"\d+|through|to|and|,|[-–—]", _re.IGNORECASE)
-    for segment_match in segment_pattern.finditer(text):
-        tokens = token_pattern.findall(segment_match.group(1))
-        step_references.update(_parse_step_segment_tokens(tokens))
+    step_references = {int(matched_step) for matched_step in _STEP_SINGULAR_PATTERN.findall(text)}
+    step_references.update(_step_refs_from_segments(text))
     return step_references
 
 
@@ -1088,7 +1112,11 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
                 if verify_now():
                     return None
             except Exception:
-                pass
+                # Issue #62: a raising verifier keeps the pushback
+                # feedback (the old silent pass did the same), but the
+                # failure is now logged instead of swallowed silently.
+                logger.warning("verify_now raised in grounding gate; "
+                               "keeping pushback feedback", exc_info=True)
 
         return _unchanged_after_read_feedback(step, prior_output_paths)
 
@@ -1187,7 +1215,12 @@ def _write_step_to_store(run_store, step: PlanStep, attempts: list[dict], status
             verify_checks=step.verify, verify_waived=step.verify_waived,
             attempts=attempts or None)
     except Exception:
-        pass
+        # Issue #62: persisting the step record is best-effort, so a
+        # failing store still must not fail the run (the old silent
+        # pass did the same), but the failure is now logged instead
+        # of swallowed silently.
+        logger.warning("run store write failed; step record dropped",
+                       exc_info=True)
 
 
 def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],

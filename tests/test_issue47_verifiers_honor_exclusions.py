@@ -56,15 +56,15 @@ INDEXES = '"business-inventory.txt" indexes the files from step 1'
 EXCLUDES = '"business-inventory.txt" excludes the contents of "school-form.txt"'
 
 
-def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name
-          + (f" -- {detail}" if detail and not cond else ""))
-    if not cond:
+def check(name, condition, detail=""):
+    print(("PASS " if condition else "FAIL ") + name
+          + (f" -- {detail}" if detail and not condition else ""))
+    if not condition:
         raise AssertionError(name)
 
 
-def _make_jail(tmp, deliverable):
-    root = Path(tmp)
+def _make_jail(temporary_directory, deliverable):
+    root = Path(temporary_directory)
     (root / "gig-gear-notes.txt").write_text(
         "Instructions for checking and maintaining performance gear.\n")
     (root / "parts-inventory.csv").write_text(
@@ -100,8 +100,8 @@ def _checks(jail, excluded, deliverable_clauses):
 
 def t_subcase_b_trap_gone():
     """Correct deliverable with indexes plus excludes passes both."""
-    tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _make_jail(tmp, CORRECT)
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, CORRECT)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
     check("helper finds the contents-of filename",
           excluded == {"business-inventory.txt": {"school-form.txt"}},
@@ -117,8 +117,8 @@ def t_subcase_b_trap_gone():
 
 def t_wrong_deliverable_fails_on_excludes():
     """Presence alone does not catch the leak; excludes does."""
-    tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _make_jail(tmp, WRONG)
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, WRONG)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
     result = _checks(jail, excluded, [INDEXES, EXCLUDES])
     by_name = {check_result.verifier: check_result for check_result in result.checks}
@@ -131,7 +131,7 @@ def t_wrong_deliverable_fails_on_excludes():
 
 def t_no_excludes_identical_to_today():
     """No excludes clauses means the full listing is required."""
-    tmp = tempfile.mkdtemp(prefix="issue47-test-")
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
     listing = planner.PlanStep(
         id=1, instruction="list the files",
         done_when="the output lists the files")
@@ -141,11 +141,11 @@ def t_no_excludes_identical_to_today():
     excluded = verify._excluded_files_for([listing, compile_step], 2)
     check("helper finds nothing without excludes clauses",
           excluded == {}, str(excluded))
-    jail = _make_jail(tmp, CORRECT)
+    jail = _make_jail(temporary_directory, CORRECT)
     result = _checks(jail, excluded, [INDEXES])
     check("three-file deliverable fails indexes without excludes",
           not result.checks[0].ok, result.checks[0].detail)
-    jail = _make_jail(tmp, WRONG)
+    jail = _make_jail(temporary_directory, WRONG)
     result = _checks(jail, excluded, [INDEXES])
     check("four-file deliverable passes indexes without excludes",
           result.checks[0].ok, result.checks[0].detail)
@@ -159,8 +159,8 @@ def t_redaction_shape_caveat():
     the name proof for the scrubbed file is lost. A contains
     clause for the filename could restore it, but the planner
     would have to know to add one."""
-    tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _make_jail(tmp, CORRECT)
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, CORRECT)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
     result = _checks(jail, excluded, [INDEXES])
     check("indexes passes without the scrubbed filename present",
@@ -182,8 +182,8 @@ def t_non_contents_forms_subtract_nothing():
           verify._excluded_files_for([literal], 2) == {})
     check("fields form yields nothing",
           verify._excluded_files_for([fields], 2) == {})
-    tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _make_jail(tmp, CORRECT)
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, CORRECT)
     result = _checks(jail, {}, [INDEXES])
     check("indexes still requires the full listing",
           not result.checks[0].ok, result.checks[0].detail)
@@ -197,8 +197,8 @@ def t_scoping_same_deliverable_only():
     excluded = verify._excluded_files_for([other], 2)
     check("other deliverable exclusion is scoped away",
           excluded == {"other.txt": {"school-form.txt"}}, str(excluded))
-    tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _make_jail(tmp, CORRECT)
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, CORRECT)
     result = _checks(jail, excluded, [INDEXES])
     check("indexes still requires school-form.txt for this deliverable",
           not result.checks[0].ok, result.checks[0].detail)
@@ -241,12 +241,58 @@ def t_unquoted_target_subtracts_nothing():
           == {"business-inventory.txt": {"school-form.txt"}})
 
 
+ACCOUNTS_FOR = '"business-inventory.txt" accounts for the files from step 1'
+
+
+def _context_with_items(jail, prior_items, excluded):
+    return verify.VerifyContext(
+        jail=jail, step_id=2, task="business files only",
+        prior_items=prior_items, excluded_files=excluded)
+
+
+def t_all_excluded_detail_names_the_exclusion():
+    """A listing whose items were all excluded says so, not 'no file list'."""
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, CORRECT)
+    excluded = {"business-inventory.txt": {"school-form.txt"}}
+    context = _context_with_items(jail, {1: ["school-form.txt"]}, excluded)
+    result = verify.verify_step([INDEXES], context)
+    check("indexes ok on a fully excluded listing",
+          result.checks[0].ok, result.checks[0].detail)
+    check("indexes detail names the exclusion",
+          result.checks[0].detail
+          == "all files from step 1 excluded: coverage not checked",
+          result.checks[0].detail)
+    result = verify.verify_step([ACCOUNTS_FOR], context)
+    check("accounts_for detail names the exclusion",
+          result.checks[0].detail
+          == "all files from step 1 excluded: accounting not checked",
+          result.checks[0].detail)
+
+
+def t_empty_source_detail_names_the_empty_list():
+    """A step that produced nothing still says 'produced no file list'."""
+    temporary_directory = tempfile.mkdtemp(prefix="issue47-test-")
+    jail = _make_jail(temporary_directory, CORRECT)
+    context = _context_with_items(jail, {1: []}, {})
+    result = verify.verify_step([INDEXES], context)
+    check("indexes detail names the empty list",
+          result.checks[0].detail
+          == "step 1 produced no file list: coverage not checked",
+          result.checks[0].detail)
+    result = verify.verify_step([ACCOUNTS_FOR], context)
+    check("accounts_for detail names the empty list",
+          result.checks[0].detail
+          == "step 1 produced no file list: accounting not checked",
+          result.checks[0].detail)
+
+
 def main():
-    fns = [v for k, v in sorted(globals().items())
-           if k.startswith("t_") and callable(v)]
-    for fn in fns:
-        fn()
-    print(f"{len(fns)} tests passed")
+    test_functions = [function for name, function in sorted(globals().items())
+           if name.startswith("t_") and callable(function)]
+    for test_function in test_functions:
+        test_function()
+    print(f"{len(test_functions)} tests passed")
 
 
 if __name__ == "__main__":

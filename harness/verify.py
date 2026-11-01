@@ -87,10 +87,10 @@ def _pick(*groups: str | None) -> str | None:
     return next((g for g in groups if g is not None), None)
 
 
-def _resolve(verify_context: VerifyContext, rel: str | None) -> tuple[object | None, str]:
-    """Resolve rel inside the jail. Returns (path, '') or (None, error)."""
+def _resolve(verify_context: VerifyContext, relative_path: str | None) -> tuple[object | None, str]:
+    """Resolve a relative path inside the jail. Returns (path, '') or (None, error)."""
     try:
-        return verify_context.jail.resolve((rel or "").strip()), ""
+        return verify_context.jail.resolve((relative_path or "").strip()), ""
     except Refusal as e:
         return None, str(e)
 
@@ -156,41 +156,41 @@ _SHOULD = r"""(?:should\s+)?"""
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?:exactly|the\s+exact\s+content)\s+{_QTEXT}\s*$""")
 def _v_contains_exactly(m: re.Match, verify_context: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     text = _pick(*m.groups()[4:7])
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "contains_exactly", err)
     if not p.is_file():
         return CheckResult(then, False, "contains_exactly",
-                           f"{rel!r} is not a file — expected exactly {text!r}")
+                           f"{relative_path!r} is not a file — expected exactly {text!r}")
     got = p.read_text().strip()
     if got == text:
         return CheckResult(then, True, "contains_exactly",
-                           f"{rel!r} contains exactly {text!r}")
+                           f"{relative_path!r} contains exactly {text!r}")
     return CheckResult(then, False, "contains_exactly",
-                       f"{rel!r}: got {got!r}, expected exactly {text!r}")
+                       f"{relative_path!r}: got {got!r}, expected exactly {text!r}")
 
 
 @verifier("has_lines",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}(?:has|contains?)\s+"""
           rf"""(\d+)\s+lines?\s*[.!]?\s*$""")
 def _v_has_lines(m: re.Match, verify_context: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     n = int(m.group(5))
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "has_lines", err)
     if not p.is_file():
         return CheckResult(then, False, "has_lines",
-                           f"{rel!r} is not a file — expected {n} lines")
+                           f"{relative_path!r} is not a file — expected {n} lines")
     got = len(p.read_text().splitlines())
     if got == n:
-        return CheckResult(then, True, "has_lines", f"{rel!r} has {n} lines")
+        return CheckResult(then, True, "has_lines", f"{relative_path!r} has {n} lines")
     return CheckResult(then, False, "has_lines",
-                       f"{rel!r} has {got} lines, expected {n}")
+                       f"{relative_path!r} has {got} lines, expected {n}")
 
 
 @verifier("indexes",
@@ -203,14 +203,14 @@ def _v_indexes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     Strict by definition: an index that omits a source file is not an
     index of it, so every recorded item must appear, with no
     at-least-half floor and no exhaustive-cue condition."""
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     step_no = int(m.group(5))
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "indexes", err)
     items = list(verify_context.prior_items.get(step_no) or [])
-    excluded = verify_context.excluded_files.get(rel) or set()
+    excluded = verify_context.excluded_files.get(relative_path) or set()
     if excluded:
         # Issue #47 option 1: a completeness check honors the plan's
         # contents-of excludes clauses for this deliverable.
@@ -224,22 +224,22 @@ def _v_indexes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
                            f"coverage not checked")
     if not p.is_file():
         return CheckResult(then, False, "indexes",
-                           f"{rel!r} is not a file — expected it to "
+                           f"{relative_path!r} is not a file — expected it to "
                            f"index the {len(items)} files from step "
                            f"{step_no}")
     content = p.read_text(errors="replace")
     bad = _deferral_in(content)
     if bad:
         return CheckResult(then, False, "indexes",
-                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"{relative_path!r} contains a deferral ({bad!r}) — "
                            f"the index must be finished, not promised")
     covered = [i for i in items if i in content]
     if len(covered) == len(items):
         return CheckResult(then, True, "indexes",
-                           f"{rel!r} indexes all {len(items)} files "
+                           f"{relative_path!r} indexes all {len(items)} files "
                            f"from step {step_no}")
     missing = [i for i in items if i not in content]
-    detail = (f"{rel!r} indexes {len(covered)} of {len(items)} files "
+    detail = (f"{relative_path!r} indexes {len(covered)} of {len(items)} files "
               f"from step {step_no}; an index must name every file; "
               f"missing include: " + ", ".join(missing[:12]))
     if len(missing) > 12:
@@ -396,14 +396,14 @@ def _norm(text: str) -> str:
           rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
 def _v_accounts_for(m: re.Match, verify_context: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     step_no = int(m.group(5))
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "accounts_for", err)
     items = list(verify_context.prior_items.get(step_no) or [])
-    excluded = verify_context.excluded_files.get(rel) or set()
+    excluded = verify_context.excluded_files.get(relative_path) or set()
     if excluded:
         # Issue #47 option 1: see _v_indexes. Same subtraction for
         # the same reason, before the empty-set check.
@@ -414,21 +414,21 @@ def _v_accounts_for(m: re.Match, verify_context: VerifyContext) -> CheckResult:
                            f"accounting not checked")
     if not p.is_file():
         return CheckResult(then, False, "accounts_for",
-                           f"{rel!r} is not a file — expected it to "
+                           f"{relative_path!r} is not a file — expected it to "
                            f"account for the {len(items)} files from "
                            f"step {step_no}")
     content = p.read_text(errors="replace")
     bad = _deferral_in(content)
     if bad:
         return CheckResult(then, False, "accounts_for",
-                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"{relative_path!r} contains a deferral ({bad!r}) — "
                            f"the document must be finished, not promised")
     missing = [i for i in items if i not in content]
     if not missing:
         return CheckResult(then, True, "accounts_for",
-                           f"{rel!r} accounts for all {len(items)} "
+                           f"{relative_path!r} accounts for all {len(items)} "
                            f"files from step {step_no}")
-    detail = (f"{rel!r} accounts for {len(items) - len(missing)} of "
+    detail = (f"{relative_path!r} accounts for {len(items) - len(missing)} of "
               f"{len(items)} files from step {step_no}; every listed "
               f"file must be accounted for; missing include: "
               + ", ".join(missing[:12]))
@@ -447,7 +447,7 @@ def _v_preserves(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     preserved the records. A field whose label never appears in the
     source records cannot be checked and is reported as such, the
     same honesty rule as covers with no measurable source list."""
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     fields = _parse_fields(m.group(5))
     refs = [r for r in _refs_in(m.group(6)) if r != verify_context.step_id]
     then = m.string.strip()
@@ -462,13 +462,13 @@ def _v_preserves(m: re.Match, verify_context: VerifyContext) -> CheckResult:
             detail = ("the clause names no source steps: "
                       "preservation not checked")
         return CheckResult(then, True, "preserves", detail)
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "preserves", err)
     ref_list = ", ".join(str(r) for r in refs)
     if not p.is_file():
         return CheckResult(then, False, "preserves",
-                           f"{rel!r} is not a file — expected it to "
+                           f"{relative_path!r} is not a file — expected it to "
                            f"preserve {', '.join(fields)} from "
                            f"step(s) {ref_list}")
     content = _norm(p.read_text(errors="replace"))
@@ -503,10 +503,10 @@ def _v_preserves(m: re.Match, verify_context: VerifyContext) -> CheckResult:
         if len(missing) > 8:
             shown += f"; and {len(missing) - 8} more"
         return CheckResult(then, False, "preserves",
-                           f"{rel!r} is missing values the source "
+                           f"{relative_path!r} is missing values the source "
                            f"steps read: {shown}{note}")
     return CheckResult(then, True, "preserves",
-                       f"{rel!r} preserves all {total} values of "
+                       f"{relative_path!r} preserves all {total} values of "
                        f"{', '.join(fields)} read in step(s) "
                        f"{ref_list}{note}")
 
@@ -530,26 +530,26 @@ def _v_preserves(m: re.Match, verify_context: VerifyContext) -> CheckResult:
           rf"""(.+?)\s+from\s+(.+?))\s*[.!]?\s*$""")
 def _v_excludes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     g = m.groups()
-    rel = _pick(*g[0:4])
-    contents_rel = _pick(*g[4:8])
+    relative_path = _pick(*g[0:4])
+    contents_relative_path = _pick(*g[4:8])
     literal = _pick(*g[8:11])
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "excludes", err)
     if not p.is_file():
         return CheckResult(then, False, "excludes",
-                           f"{rel!r} is not a file — expected a "
+                           f"{relative_path!r} is not a file — expected a "
                            f"deliverable that excludes the named "
                            f"content")
     content = _norm(p.read_text(errors="replace"))
     leaks: list[str] = []
     basis = ""
-    if contents_rel is not None:
-        sp, serr = _resolve(verify_context, contents_rel)
+    if contents_relative_path is not None:
+        sp, serr = _resolve(verify_context, contents_relative_path)
         if serr or sp is None or not sp.is_file():
             return CheckResult(then, True, "excludes",
-                               f"source file {contents_rel!r} not "
+                               f"source file {contents_relative_path!r} not "
                                f"found — exclusion not checked")
         src = sp.read_text(errors="replace")
         guarded = [v for _label, v in _harvest(src)]
@@ -558,10 +558,10 @@ def _v_excludes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
             if len(line) >= 12 and line not in guarded:
                 guarded.append(line)
         leaks = [v for v in guarded if _norm(v) in content]
-        basis = f"content from {contents_rel!r}"
+        basis = f"content from {contents_relative_path!r}"
         if not guarded:
             return CheckResult(then, True, "excludes",
-                               f"{contents_rel!r} holds nothing "
+                               f"{contents_relative_path!r} holds nothing "
                                f"checkable — exclusion not checked")
     elif literal is not None:
         if _norm(literal) in content:
@@ -595,57 +595,57 @@ def _v_excludes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
         if len(leaks) > 8:
             shown += f"; and {len(leaks) - 8} more"
         return CheckResult(then, False, "excludes",
-                           f"{rel!r} must exclude {basis}, but it "
+                           f"{relative_path!r} must exclude {basis}, but it "
                            f"contains: {shown}")
     return CheckResult(then, True, "excludes",
-                       f"{rel!r} excludes {basis}")
+                       f"{relative_path!r} excludes {basis}")
 
 
 @verifier("contains",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?!exactly\b|the\s+exact\s+content\b){_QTEXT}\s*$""")
 def _v_contains(m: re.Match, verify_context: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     text = _pick(*m.groups()[4:7])
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "contains", err)
     if not p.is_file():
         return CheckResult(then, False, "contains",
-                           f"{rel!r} is not a file — expected it to contain {text!r}")
+                           f"{relative_path!r} is not a file — expected it to contain {text!r}")
     if text in p.read_text():
-        return CheckResult(then, True, "contains", f"{rel!r} contains {text!r}")
+        return CheckResult(then, True, "contains", f"{relative_path!r} contains {text!r}")
     return CheckResult(then, False, "contains",
-                       f"{rel!r} does not contain {text!r}")
+                       f"{relative_path!r} does not contain {text!r}")
 
 
 @verifier("not_exists",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}(?:does\s+)?not\s+exist\s*[.!]?\s*$""")
 def _v_not_exists(m: re.Match, verify_context: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "not_exists", err)
     if not p.exists():
-        return CheckResult(then, True, "not_exists", f"{rel!r} does not exist")
+        return CheckResult(then, True, "not_exists", f"{relative_path!r} does not exist")
     return CheckResult(then, False, "not_exists",
-                       f"{rel!r} exists — expected it not to")
+                       f"{relative_path!r} exists — expected it not to")
 
 
 @verifier("exists",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}exists?\s*[.!]?\s*$""")
 def _v_exists(m: re.Match, verify_context: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
+    relative_path = _pick(*m.groups()[0:4])
     then = m.string.strip()
-    p, err = _resolve(verify_context, rel)
+    p, err = _resolve(verify_context, relative_path)
     if err:
         return CheckResult(then, False, "exists", err)
     if p.exists():
-        return CheckResult(then, True, "exists", f"{rel!r} exists")
+        return CheckResult(then, True, "exists", f"{relative_path!r} exists")
     return CheckResult(then, False, "exists",
-                       f"{rel!r} MISSING — expected it to exist")
+                       f"{relative_path!r} MISSING — expected it to exist")
 
 
 def match_verifier(then: str) -> str | None:
@@ -704,10 +704,10 @@ def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
             match = excludes.pattern.match(clause)
             if match is None:
                 continue
-            contents_rel = _pick(*match.groups()[4:8])
-            if parsed[1] is None or contents_rel is None:
+            contents_relative_path = _pick(*match.groups()[4:8])
+            if parsed[1] is None or contents_relative_path is None:
                 continue
-            excluded.setdefault(parsed[1], set()).add(contents_rel)
+            excluded.setdefault(parsed[1], set()).add(contents_relative_path)
     return excluded
 
 
@@ -964,13 +964,13 @@ def missing_deliverables(steps, jail: Jail) -> list[str]:
     """Promised deliverables that do not exist in the workspace.
     Paths escaping the jail cannot be judged and are skipped."""
     missing: list[str] = []
-    for rel in promised_deliverables(steps):
+    for relative_path in promised_deliverables(steps):
         try:
-            p = jail.resolve(rel)
+            p = jail.resolve(relative_path)
         except Refusal:
             continue
         if not p.exists():
-            missing.append(rel)
+            missing.append(relative_path)
     return missing
 
 

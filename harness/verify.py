@@ -41,6 +41,12 @@ class VerifyContext:
     # Issue #17 part 2: the covers step's Intent line. An exhaustive cue
     # here makes covers strict just as one in the task does.
     intent: str = ""
+    # Issue #47 option 1: files excluded for each deliverable by
+    # contents-of excludes clauses on the current or earlier steps.
+    # _v_indexes and _v_accounts_for subtract the set for the
+    # clause's target from the expected set. Defaults to empty, so
+    # contexts built without it behave exactly as before.
+    excluded_files: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -204,6 +210,14 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
     if err:
         return CheckResult(then, False, "indexes", err)
     items = list(ctx.prior_items.get(step_no) or [])
+    excluded = ctx.excluded_files.get(rel) or set()
+    if excluded:
+        # Issue #47 option 1: a completeness check honors the plan's
+        # contents-of excludes clauses for this deliverable.
+        # Subtraction runs before the empty-set check, so a fully
+        # excluded listing reports "coverage not checked" exactly
+        # like an empty listing.
+        items = [i for i in items if i not in excluded]
     if not items:
         return CheckResult(then, True, "indexes",
                            f"step {step_no} produced no file list — "
@@ -389,6 +403,11 @@ def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
     if err:
         return CheckResult(then, False, "accounts_for", err)
     items = list(ctx.prior_items.get(step_no) or [])
+    excluded = ctx.excluded_files.get(rel) or set()
+    if excluded:
+        # Issue #47 option 1: see _v_indexes. Same subtraction for
+        # the same reason, before the empty-set check.
+        items = [i for i in items if i not in excluded]
     if not items:
         return CheckResult(then, True, "accounts_for",
                            f"step {step_no} produced no file list — "
@@ -653,6 +672,43 @@ def parse_then(then: str) -> tuple[str, str | None, str | None] | None:
             value = _pick(*g[4:7]) if v.name in ("contains", "contains_exactly") else None
             return v.name, path, value
     return None
+
+
+def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
+    """Per-deliverable excluded filenames from contents-of excludes clauses.
+
+    Scans Then clauses on steps with id <= current_step_id: same
+    deliverable only, current or earlier steps only. Only the
+    contents-of form yields a filename to subtract (its source,
+    quoted or bare path-shaped). Literal and fields forms yield no
+    filename, and a clause that does not parse (prose target or
+    prose contents source) yields none and attests as before.
+    Steps are duck-typed (any object with .id and .done_when, the
+    newline-separated Then bodies), so this stays importable
+    without planner, which imports verify.
+    """
+    excluded: dict[str, set[str]] = {}
+    excludes = next((v for v in VERIFIERS if v.name == "excludes"), None)
+    if excludes is None:
+        return excluded
+    for step in steps or []:
+        if step.id > current_step_id:
+            continue
+        for clause in (step.done_when or "").split("\n"):
+            clause = clause.strip()
+            if not clause:
+                continue
+            parsed = parse_then(clause)
+            if parsed is None or parsed[0] != "excludes":
+                continue
+            m = excludes.pattern.match(clause)
+            if m is None:
+                continue
+            contents_rel = _pick(*m.groups()[4:8])
+            if parsed[1] is None or contents_rel is None:
+                continue
+            excluded.setdefault(parsed[1], set()).add(contents_rel)
+    return excluded
 
 
 def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:

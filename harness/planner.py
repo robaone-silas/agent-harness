@@ -1216,7 +1216,8 @@ def _run_step_verified(task: str, step: PlanStep, steps: list[PlanStep],
     verify_context = _verify.VerifyContext(
         jail=jail, step_id=step.id, task=task,
         prior_items={prior_step.id: list(prior_step.source_items) for prior_step in steps if prior_step.source_items},
-        intent=step.intent or "")
+        intent=step.intent or "",
+        excluded_files=_verify._excluded_files_for(steps, step.id))
     feedback_message = ""
     last_verification_result = None
     attempts: list[dict] = []

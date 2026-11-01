@@ -87,15 +87,15 @@ def _steps_with_excludes():
     return [listing, compile_step]
 
 
-def _ctx(jail, excluded):
+def _build_verify_context(jail, excluded):
     return verify.VerifyContext(
         jail=jail, step_id=2, task="business files only",
         prior_items={1: list(ALL_FILES)}, excluded_files=excluded)
 
 
 def _checks(jail, excluded, deliverable_clauses):
-    ctx = _ctx(jail, excluded)
-    return verify.verify_step(deliverable_clauses, ctx)
+    verify_context = _build_verify_context(jail, excluded)
+    return verify.verify_step(deliverable_clauses, verify_context)
 
 
 def t_subcase_b_trap_gone():
@@ -106,13 +106,13 @@ def t_subcase_b_trap_gone():
     check("helper finds the contents-of filename",
           excluded == {"business-inventory.txt": {"school-form.txt"}},
           str(excluded))
-    res = _checks(jail, excluded, [INDEXES, EXCLUDES])
-    by_name = {c.verifier: c for c in res.checks}
+    result = _checks(jail, excluded, [INDEXES, EXCLUDES])
+    by_name = {check_result.verifier: check_result for check_result in result.checks}
     check("indexes passes on the subtracted set",
           by_name["indexes"].ok, by_name["indexes"].detail)
     check("excludes passes on the scrubbed deliverable",
           by_name["excludes"].ok, by_name["excludes"].detail)
-    check("step passes overall", res.ok, str(res.checks))
+    check("step passes overall", result.ok, str(result.checks))
 
 
 def t_wrong_deliverable_fails_on_excludes():
@@ -120,13 +120,13 @@ def t_wrong_deliverable_fails_on_excludes():
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
     jail = _ws(tmp, WRONG)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
-    res = _checks(jail, excluded, [INDEXES, EXCLUDES])
-    by_name = {c.verifier: c for c in res.checks}
+    result = _checks(jail, excluded, [INDEXES, EXCLUDES])
+    by_name = {check_result.verifier: check_result for check_result in result.checks}
     check("indexes passes (presence alone misses the leak)",
           by_name["indexes"].ok, by_name["indexes"].detail)
     check("excludes fails on the leaked school content",
           not by_name["excludes"].ok, by_name["excludes"].detail)
-    check("step fails overall", not res.ok, str(res.checks))
+    check("step fails overall", not result.ok, str(result.checks))
 
 
 def t_no_excludes_identical_to_today():
@@ -142,13 +142,13 @@ def t_no_excludes_identical_to_today():
     check("helper finds nothing without excludes clauses",
           excluded == {}, str(excluded))
     jail = _ws(tmp, CORRECT)
-    res = _checks(jail, excluded, [INDEXES])
+    result = _checks(jail, excluded, [INDEXES])
     check("three-file deliverable fails indexes without excludes",
-          not res.checks[0].ok, res.checks[0].detail)
+          not result.checks[0].ok, result.checks[0].detail)
     jail = _ws(tmp, WRONG)
-    res = _checks(jail, excluded, [INDEXES])
+    result = _checks(jail, excluded, [INDEXES])
     check("four-file deliverable passes indexes without excludes",
-          res.checks[0].ok, res.checks[0].detail)
+          result.checks[0].ok, result.checks[0].detail)
 
 
 def t_redaction_shape_caveat():
@@ -162,12 +162,12 @@ def t_redaction_shape_caveat():
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
     jail = _ws(tmp, CORRECT)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
-    res = _checks(jail, excluded, [INDEXES])
+    result = _checks(jail, excluded, [INDEXES])
     check("indexes passes without the scrubbed filename present",
-          res.checks[0].ok, res.checks[0].detail)
-    res = _checks(jail, {}, [INDEXES])
+          result.checks[0].ok, result.checks[0].detail)
+    result = _checks(jail, {}, [INDEXES])
     check("same deliverable fails indexes without the exclusion",
-          not res.checks[0].ok, res.checks[0].detail)
+          not result.checks[0].ok, result.checks[0].detail)
 
 
 def t_non_contents_forms_subtract_nothing():
@@ -184,9 +184,9 @@ def t_non_contents_forms_subtract_nothing():
           verify._excluded_files_for([fields], 2) == {})
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
     jail = _ws(tmp, CORRECT)
-    res = _checks(jail, {}, [INDEXES])
+    result = _checks(jail, {}, [INDEXES])
     check("indexes still requires the full listing",
-          not res.checks[0].ok, res.checks[0].detail)
+          not result.checks[0].ok, result.checks[0].detail)
 
 
 def t_scoping_same_deliverable_only():
@@ -199,9 +199,9 @@ def t_scoping_same_deliverable_only():
           excluded == {"other.txt": {"school-form.txt"}}, str(excluded))
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
     jail = _ws(tmp, CORRECT)
-    res = _checks(jail, excluded, [INDEXES])
+    result = _checks(jail, excluded, [INDEXES])
     check("indexes still requires school-form.txt for this deliverable",
-          not res.checks[0].ok, res.checks[0].detail)
+          not result.checks[0].ok, result.checks[0].detail)
 
 
 def t_scoping_earlier_or_same_step_only():

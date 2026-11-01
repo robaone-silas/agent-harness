@@ -217,7 +217,7 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
         # Subtraction runs before the empty-set check, so a fully
         # excluded listing reports "coverage not checked" exactly
         # like an empty listing.
-        items = [i for i in items if i not in excluded]
+        items = [item for item in items if item not in excluded]
     if not items:
         return CheckResult(then, True, "indexes",
                            f"step {step_no} produced no file list — "
@@ -407,7 +407,7 @@ def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
     if excluded:
         # Issue #47 option 1: see _v_indexes. Same subtraction for
         # the same reason, before the empty-set check.
-        items = [i for i in items if i not in excluded]
+        items = [item for item in items if item not in excluded]
     if not items:
         return CheckResult(then, True, "accounts_for",
                            f"step {step_no} produced no file list — "
@@ -688,7 +688,7 @@ def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
     without planner, which imports verify.
     """
     excluded: dict[str, set[str]] = {}
-    excludes = next((v for v in VERIFIERS if v.name == "excludes"), None)
+    excludes = next((verifier for verifier in VERIFIERS if verifier.name == "excludes"), None)
     if excludes is None:
         return excluded
     for step in steps or []:
@@ -701,10 +701,10 @@ def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
             parsed = parse_then(clause)
             if parsed is None or parsed[0] != "excludes":
                 continue
-            m = excludes.pattern.match(clause)
-            if m is None:
+            match = excludes.pattern.match(clause)
+            if match is None:
                 continue
-            contents_rel = _pick(*m.groups()[4:8])
+            contents_rel = _pick(*match.groups()[4:8])
             if parsed[1] is None or contents_rel is None:
                 continue
             excluded.setdefault(parsed[1], set()).add(contents_rel)

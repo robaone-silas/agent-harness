@@ -113,6 +113,37 @@ def _deferral_in(text: str) -> str | None:
     return None
 
 
+def _lines_from_sub_step(sub_step) -> list[str] | None:
+    """Name-list lines from one listing-shaped tool result, else None.
+
+    list_dir and grep_files outputs are one workspace-relative name
+    per line; exec output counts only when the command is ls or find,
+    with exit-status lines stripped. Anything else is prose or
+    content, never a name list."""
+    if not sub_step.tool or sub_step.result is None:
+        return None
+    if sub_step.tool in ("list_dir", "grep_files"):
+        return sub_step.result.splitlines()
+    if sub_step.tool == "exec":
+        cmd = str((sub_step.args or {}).get("command", ""))
+        if regular_expression.match(r"\s*(ls|find)\b", cmd):
+            return [line for line in sub_step.result.splitlines()
+                    if not line.startswith("exit=")]
+    return None
+
+
+def _append_item_names(lines: list[str], items: list[str]) -> None:
+    """Append cleaned, deduped item names from lines to items."""
+    for line in lines:
+        name = line.strip().rstrip("/")
+        if not name or name in ("(empty)", "(no matches)"):
+            continue
+        if name.startswith("...[") or name.startswith("exit="):
+            continue
+        if name not in items:
+            items.append(name)
+
+
 def collect_step_items(sub_steps) -> list[str]:
     """Extract the item names a step produced, from listing-shaped tool
     results: list_dir and grep_files outputs (one workspace-relative name
@@ -120,27 +151,11 @@ def collect_step_items(sub_steps) -> list[str]:
     or content, not name lists, and are never mined. Deterministic, deduped,
     order preserved."""
     items: list[str] = []
-    for s in sub_steps:
-        if not s.tool or s.result is None:
-            continue
-        lines = None
-        if s.tool in ("list_dir", "grep_files"):
-            lines = s.result.splitlines()
-        elif s.tool == "exec":
-            cmd = str((s.args or {}).get("command", ""))
-            if regular_expression.match(r"\s*(ls|find)\b", cmd):
-                lines = [ln for ln in s.result.splitlines()
-                         if not ln.startswith("exit=")]
+    for sub_step in sub_steps:
+        lines = _lines_from_sub_step(sub_step)
         if lines is None:
             continue
-        for ln in lines:
-            name = ln.strip().rstrip("/")
-            if not name or name in ("(empty)", "(no matches)"):
-                continue
-            if name.startswith("...[") or name.startswith("exit="):
-                continue
-            if name not in items:
-                items.append(name)
+        _append_item_names(lines, items)
     return items
 
 
@@ -193,6 +208,34 @@ def _v_has_lines(match: regular_expression.Match, verify_context: VerifyContext)
                        f"{relative_path!r} has {got} lines, expected {expected_line_count}")
 
 
+def _empty_list_detail(step_number: int, had_items: bool, checked_word: str) -> str:
+    """Not-checked detail for a completeness check with no items left.
+
+    Issue #47 option 1: subtraction runs before the empty-set check,
+    so a fully excluded listing reports ok with its own detail: it
+    had a list, and every item in it was excluded."""
+    if had_items:
+        return (f"all files from step {step_number} excluded: "
+                f"{checked_word} not checked")
+    return (f"step {step_number} produced no file list: "
+            f"{checked_word} not checked")
+
+
+def _missing_items_detail(verb_phrase: str, relative_path: str,
+                          items: list[str], covered_count: int,
+                          missing: list[str], step_number: int,
+                          requirement: str) -> str:
+    """Failure detail for a completeness check naming what is missing,
+    capped at 12 names with a count for the rest."""
+    detail = (f"{relative_path!r} {verb_phrase} {covered_count} of {len(items)} files "
+              f"from step {step_number}; {requirement}; "
+              f"missing include: " + ", ".join(missing[:12]))
+    if len(missing) > 12:
+        detail += (f" and {len(missing) - 12} more "
+                   f"(see step {step_number}'s stored output)")
+    return detail
+
+
 @verifier("indexes",
           rf"""^{_FILE}{_QPATH}\s+indexes\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
@@ -220,13 +263,9 @@ def _v_indexes(match: regular_expression.Match, verify_context: VerifyContext) -
         # it had a list, and every item in it was excluded.
         items = [item for item in items if item not in excluded]
     if not items:
-        if had_items:
-            detail = (f"all files from step {step_number} excluded: "
-                      f"coverage not checked")
-        else:
-            detail = (f"step {step_number} produced no file list: "
-                      f"coverage not checked")
-        return CheckResult(then, True, "indexes", detail)
+        return CheckResult(then, True, "indexes",
+                           _empty_list_detail(step_number, had_items,
+                                              "coverage"))
     if not resolved_path.is_file():
         return CheckResult(then, False, "indexes",
                            f"{relative_path!r} is not a file — expected it to "
@@ -244,13 +283,11 @@ def _v_indexes(match: regular_expression.Match, verify_context: VerifyContext) -
                            f"{relative_path!r} indexes all {len(items)} files "
                            f"from step {step_number}")
     missing = [i for i in items if i not in content]
-    detail = (f"{relative_path!r} indexes {len(covered)} of {len(items)} files "
-              f"from step {step_number}; an index must name every file; "
-              f"missing include: " + ", ".join(missing[:12]))
-    if len(missing) > 12:
-        detail += (f" and {len(missing) - 12} more "
-                   f"(see step {step_number}'s stored output)")
-    return CheckResult(then, False, "indexes", detail)
+    return CheckResult(then, False, "indexes",
+                       _missing_items_detail(
+                           "indexes", relative_path, items, len(covered),
+                           missing, step_number,
+                           "an index must name every file"))
 
 
 # --- preserves (issue #37): field-level preservation across steps ---
@@ -282,34 +319,42 @@ _PRES_TOKEN = regular_expression.compile(r"\d+|through|to|and|,|[-–—]", regu
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
 
 
+def _refs_from_segment(segment_text: str) -> list[int]:
+    """Step numbers one plural segment names, ranges expanded.
+
+    One connector per numeric gap: the last separator spoken before
+    the next number governs that gap, so repeated separators
+    (", and") cannot shift the pairing between numbers and
+    connectors. The token walk in planner._step_refs pairs them the
+    same way."""
+    numbers: list[int] = []
+    gaps: list[str] = []
+    pending: list[str] = []
+    for token in _PRES_TOKEN.findall(segment_text):
+        if token.isdigit():
+            if numbers:
+                gaps.append(pending[-1].strip().lower()
+                            if pending else "")
+            numbers.append(int(token))
+            pending = []
+        else:
+            pending.append(token)
+    refs: list[int] = []
+    for index, number in enumerate(numbers):
+        if (index + 1 < len(numbers) and gaps[index] in _PRES_RANGE_SEPS):
+            first, second = number, numbers[index + 1]
+            if 0 < abs(second - first) <= 64:
+                refs.extend(range(min(first, second), max(first, second) + 1))
+                continue
+        refs.append(number)
+    return refs
+
+
 def _refs_in(text: str) -> list[int]:
     refs = [int(step_number_string) for step_number_string in regular_expression.findall(r"\bstep\s+(\d+)", text or "",
                                        regular_expression.IGNORECASE)]
     for match in _PRES_SEG.finditer(text or ""):
-        nums: list[int] = []
-        gaps: list[str] = []
-        pending: list[str] = []
-        for tok in _PRES_TOKEN.findall(match.group(1)):
-            if tok.isdigit():
-                if nums:
-                    # One connector per numeric gap: the last separator
-                    # spoken before the next number governs that gap,
-                    # so repeated separators (", and") cannot shift the
-                    # pairing between numbers and connectors. The token
-                    # walk in planner._step_refs pairs them the same way.
-                    gaps.append(pending[-1].strip().lower()
-                                if pending else "")
-                nums.append(int(tok))
-                pending = []
-            else:
-                pending.append(tok)
-        for i, num in enumerate(nums):
-            if (i + 1 < len(nums) and gaps[i] in _PRES_RANGE_SEPS):
-                a, b = num, nums[i + 1]
-                if 0 < abs(b - a) <= 64:
-                    refs.extend(range(min(a, b), max(a, b) + 1))
-                    continue
-            refs.append(num)
+        refs.extend(_refs_from_segment(match.group(1)))
     seen: set[int] = set()
     out: list[int] = []
     for referenced_step_id in refs:
@@ -415,13 +460,9 @@ def _v_accounts_for(match: regular_expression.Match, verify_context: VerifyConte
         # same all-excluded distinction, before the empty-set check.
         items = [item for item in items if item not in excluded]
     if not items:
-        if had_items:
-            detail = (f"all files from step {step_number} excluded: "
-                      f"accounting not checked")
-        else:
-            detail = (f"step {step_number} produced no file list: "
-                      f"accounting not checked")
-        return CheckResult(then, True, "accounts_for", detail)
+        return CheckResult(then, True, "accounts_for",
+                           _empty_list_detail(step_number, had_items,
+                                              "accounting"))
     if not resolved_path.is_file():
         return CheckResult(then, False, "accounts_for",
                            f"{relative_path!r} is not a file — expected it to "
@@ -438,14 +479,37 @@ def _v_accounts_for(match: regular_expression.Match, verify_context: VerifyConte
         return CheckResult(then, True, "accounts_for",
                            f"{relative_path!r} accounts for all {len(items)} "
                            f"files from step {step_number}")
-    detail = (f"{relative_path!r} accounts for {len(items) - len(missing)} of "
-              f"{len(items)} files from step {step_number}; every listed "
-              f"file must be accounted for; missing include: "
-              + ", ".join(missing[:12]))
-    if len(missing) > 12:
-        detail += (f" and {len(missing) - 12} more "
-                   f"(see step {step_number}'s stored output)")
-    return CheckResult(then, False, "accounts_for", detail)
+    return CheckResult(then, False, "accounts_for",
+                       _missing_items_detail(
+                           "accounts for", relative_path, items,
+                           len(items) - len(missing), missing, step_number,
+                           "every listed file must be accounted for"))
+
+
+def _values_for_field(field: str, refs: list[int],
+                      records: dict) -> list[tuple[int, str]]:
+    """Distinct (step, value) pairs the source records carry for one
+    field: every harvested Label: value pair whose label matches the
+    field, deduped per step."""
+    values: list[tuple[int, str]] = []
+    for referenced_step_id in refs:
+        for label, value in _harvest(records.get(referenced_step_id) or ""):
+            if (_field_matches(field, label)
+                    and (referenced_step_id, value) not in values):
+                values.append((referenced_step_id, value))
+    return values
+
+
+def _preserves_empty_detail(fields: list[str], refs: list[int]) -> str:
+    """Not-checked detail for a preserves clause naming nothing."""
+    if not fields and not refs:
+        return ("the clause names no fields and no source "
+                "steps: preservation not checked")
+    if not fields:
+        return ("the clause names no fields: "
+                "preservation not checked")
+    return ("the clause names no source steps: "
+            "preservation not checked")
 
 
 @verifier("preserves",
@@ -462,16 +526,8 @@ def _v_preserves(match: regular_expression.Match, verify_context: VerifyContext)
     refs = [referenced_step_id for referenced_step_id in _refs_in(match.group(6)) if referenced_step_id != verify_context.step_id]
     then = match.string.strip()
     if not fields or not refs:
-        if not fields and not refs:
-            detail = ("the clause names no fields and no source "
-                      "steps: preservation not checked")
-        elif not fields:
-            detail = ("the clause names no fields: "
-                      "preservation not checked")
-        else:
-            detail = ("the clause names no source steps: "
-                      "preservation not checked")
-        return CheckResult(then, True, "preserves", detail)
+        return CheckResult(then, True, "preserves",
+                           _preserves_empty_detail(fields, refs))
     resolved_path, error = _resolve(verify_context, relative_path)
     if error:
         return CheckResult(then, False, "preserves", error)
@@ -486,20 +542,15 @@ def _v_preserves(match: regular_expression.Match, verify_context: VerifyContext)
     total = 0
     missing: list[tuple[str, int, str]] = []
     unchecked: list[str] = []
-    for f in fields:
-        vals: list[tuple[int, str]] = []
-        for referenced_step_id in refs:
-            for label, value in _harvest(records.get(referenced_step_id) or ""):
-                if (_field_matches(f, label)
-                        and (referenced_step_id, value) not in vals):
-                    vals.append((referenced_step_id, value))
-        if not vals:
-            unchecked.append(f)
+    for field in fields:
+        values = _values_for_field(field, refs, records)
+        if not values:
+            unchecked.append(field)
             continue
-        total += len(vals)
-        for referenced_step_id, value in vals:
+        total += len(values)
+        for referenced_step_id, value in values:
             if _norm(value) not in content:
-                missing.append((f, referenced_step_id, value))
+                missing.append((field, referenced_step_id, value))
     note = (f"; field(s) {', '.join(unchecked)} never appear in the "
             f"source records — not checked" if unchecked else "")
     if total == 0:
@@ -534,6 +585,64 @@ def _v_preserves(match: regular_expression.Match, verify_context: VerifyContext)
 # not checked and says so; a missing deliverable fails, because the
 # step promised a scrubbed file that is not there.
 
+def _excludes_contents_leaks(verify_context: VerifyContext,
+                             contents_relative_path: str,
+                             content: str) -> tuple[list[str], str, str | None]:
+    """Leaks for the contents-of form: (leaks, basis, not-checked).
+
+    The guarded set is the source file's harvested labeled values
+    plus its distinctive lines (12 characters or more). A missing
+    source file, or a source holding nothing checkable, is not a
+    failure: the clause passes as not checked with the reason."""
+    resolved_path, error = _resolve(verify_context, contents_relative_path)
+    if error or resolved_path is None or not resolved_path.is_file():
+        return [], "", (f"source file {contents_relative_path!r} not "
+                        f"found — exclusion not checked")
+    source = resolved_path.read_text(errors="replace")
+    guarded = [value for _label, value in _harvest(source)]
+    for line in source.splitlines():
+        line = regular_expression.sub(r"\s+", " ", line.strip())
+        if len(line) >= 12 and line not in guarded:
+            guarded.append(line)
+    if not guarded:
+        return [], "", (f"{contents_relative_path!r} holds nothing "
+                        f"checkable — exclusion not checked")
+    leaks = [value for value in guarded if _norm(value) in content]
+    return leaks, f"content from {contents_relative_path!r}", None
+
+
+def _excludes_fields_leaks(verify_context: VerifyContext, fields_text: str,
+                           refs_text: str,
+                           content: str) -> tuple[list[str], str, str | None]:
+    """Leaks for the fields-from-steps form: (leaks, basis, not-checked).
+
+    The guarded set is every labeled value the named source steps
+    read for a named field. A clause naming no fields or no source
+    steps, or one whose fields yield no values, passes as not
+    checked with the reason."""
+    fields = _parse_fields(fields_text)
+    refs = [referenced_step_id for referenced_step_id in _refs_in(refs_text) if referenced_step_id != verify_context.step_id]
+    if not fields or not refs:
+        return [], "", ("the clause names no fields or no "
+                        "source steps — exclusion not checked")
+    guarded = []
+    for referenced_step_id in refs:
+        for label, value in _harvest(_record_text(verify_context, referenced_step_id) or ""):
+            if any(_field_matches(field, label) for field in fields) \
+                    and value not in guarded:
+                guarded.append(value)
+    if not guarded:
+        return [], "", (f"no labeled values for "
+                        f"{', '.join(fields)} found in the "
+                        f"records of step(s) "
+                        f"{', '.join(str(referenced_step_id) for referenced_step_id in refs)} "
+                        f"— exclusion not checked")
+    leaks = [value for value in guarded if _norm(value) in content]
+    basis = (f"{', '.join(fields)} from step(s) "
+             f"{', '.join(str(referenced_step_id) for referenced_step_id in refs)}")
+    return leaks, basis, None
+
+
 @verifier("excludes",
           rf"""^{_FILE}{_QPATH}\s+excludes?\s+"""
           rf"""(?:the\s+contents\s+of\s+{_QPATH}|{_QTEXT}|"""
@@ -555,51 +664,19 @@ def _v_excludes(match: regular_expression.Match, verify_context: VerifyContext) 
     content = _norm(resolved_path.read_text(errors="replace"))
     leaks: list[str] = []
     basis = ""
+    not_checked: str | None = None
     if contents_relative_path is not None:
-        sp, serr = _resolve(verify_context, contents_relative_path)
-        if serr or sp is None or not sp.is_file():
-            return CheckResult(then, True, "excludes",
-                               f"source file {contents_relative_path!r} not "
-                               f"found — exclusion not checked")
-        src = sp.read_text(errors="replace")
-        guarded = [value for _label, value in _harvest(src)]
-        for line in src.splitlines():
-            line = regular_expression.sub(r"\s+", " ", line.strip())
-            if len(line) >= 12 and line not in guarded:
-                guarded.append(line)
-        leaks = [value for value in guarded if _norm(value) in content]
-        basis = f"content from {contents_relative_path!r}"
-        if not guarded:
-            return CheckResult(then, True, "excludes",
-                               f"{contents_relative_path!r} holds nothing "
-                               f"checkable — exclusion not checked")
+        leaks, basis, not_checked = _excludes_contents_leaks(
+            verify_context, contents_relative_path, content)
     elif literal is not None:
         if _norm(literal) in content:
             leaks = [literal]
         basis = f"the text {literal!r}"
     else:
-        fields = _parse_fields(groups[11] or "")
-        refs = [referenced_step_id for referenced_step_id in _refs_in(groups[12] or "") if referenced_step_id != verify_context.step_id]
-        if not fields or not refs:
-            return CheckResult(then, True, "excludes",
-                               "the clause names no fields or no "
-                               "source steps — exclusion not checked")
-        guarded = []
-        for referenced_step_id in refs:
-            for label, value in _harvest(_record_text(verify_context, referenced_step_id) or ""):
-                if any(_field_matches(f, label) for f in fields) \
-                        and value not in guarded:
-                    guarded.append(value)
-        if not guarded:
-            return CheckResult(then, True, "excludes",
-                               f"no labeled values for "
-                               f"{', '.join(fields)} found in the "
-                               f"records of step(s) "
-                               f"{', '.join(str(referenced_step_id) for referenced_step_id in refs)} "
-                               f"— exclusion not checked")
-        leaks = [value for value in guarded if _norm(value) in content]
-        basis = (f"{', '.join(fields)} from step(s) "
-                 f"{', '.join(str(referenced_step_id) for referenced_step_id in refs)}")
+        leaks, basis, not_checked = _excludes_fields_leaks(
+            verify_context, groups[11] or "", groups[12] or "", content)
+    if not_checked is not None:
+        return CheckResult(then, True, "excludes", not_checked)
     if leaks:
         shown = "; ".join(repr(value) for value in leaks[:8])
         if len(leaks) > 8:
@@ -684,6 +761,31 @@ def parse_then(then: str) -> tuple[str, str | None, str | None] | None:
     return None
 
 
+def _excluded_from_step(step, current_step_id: int, excludes_pattern) -> dict[str, set[str]]:
+    """Per-deliverable excluded filenames from one step's contents-of
+    excludes clauses: same deliverable only, current or earlier
+    steps only. A clause that does not parse, or whose contents
+    source is prose, yields nothing."""
+    excluded: dict[str, set[str]] = {}
+    if step.id > current_step_id:
+        return excluded
+    for clause in (step.done_when or "").split("\n"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        parsed = parse_then(clause)
+        if parsed is None or parsed[0] != "excludes":
+            continue
+        match = excludes_pattern.match(clause)
+        if match is None:
+            continue
+        contents_relative_path = _pick(*match.groups()[4:8])
+        if parsed[1] is None or contents_relative_path is None:
+            continue
+        excluded.setdefault(parsed[1], set()).add(contents_relative_path)
+    return excluded
+
+
 def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
     """Per-deliverable excluded filenames from contents-of excludes clauses.
 
@@ -702,23 +804,19 @@ def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
     if excludes is None:
         return excluded
     for step in steps or []:
-        if step.id > current_step_id:
-            continue
-        for clause in (step.done_when or "").split("\n"):
-            clause = clause.strip()
-            if not clause:
-                continue
-            parsed = parse_then(clause)
-            if parsed is None or parsed[0] != "excludes":
-                continue
-            match = excludes.pattern.match(clause)
-            if match is None:
-                continue
-            contents_relative_path = _pick(*match.groups()[4:8])
-            if parsed[1] is None or contents_relative_path is None:
-                continue
-            excluded.setdefault(parsed[1], set()).add(contents_relative_path)
+        for deliverable, sources in _excluded_from_step(step, current_step_id, excludes.pattern).items():
+            excluded.setdefault(deliverable, set()).update(sources)
     return excluded
+
+
+def _matched_check(then: str, verify_context: VerifyContext) -> CheckResult | None:
+    """The first verifier's result for a Then, or None when no
+    verifier handles the phrasing (the attestation fallback)."""
+    for verifier in VERIFIERS:
+        match = verifier.pattern.match(then)
+        if match:
+            return verifier.check(match, verify_context)
+    return None
 
 
 def verify_step(thens: list[str], verify_context: VerifyContext) -> StepVerify:
@@ -729,12 +827,7 @@ def verify_step(thens: list[str], verify_context: VerifyContext) -> StepVerify:
         then = (then or "").strip()
         if not then:
             continue
-        result = None
-        for verifier in VERIFIERS:
-            match = verifier.pattern.match(then)
-            if match:
-                result = verifier.check(match, verify_context)
-                break
+        result = _matched_check(then, verify_context)
         if result is None:
             result = _attest_or_floor(then, verify_context)
         checks.append(result)
@@ -903,6 +996,31 @@ def then_subject_file(clause: str) -> str | None:
     return _named_file(clause)
 
 
+def _floor_missing_file(then: str, verify_context: VerifyContext) -> CheckResult | None:
+    """The issue #22 existence floor for one clause: a failure when
+    the clause names a quoted file that does not exist, else None.
+
+    Absence-intent clauses are exempt (there the missing file is the
+    success state), but a recognized retired covers clause is never
+    absence intent: it promises its target exists, even when the
+    filename itself contains an absence word."""
+    named_file = _named_file(then)
+    if named_file is None:
+        return None
+    if (_legacy_covers_target(then) is None
+            and _ABSENCE_INTENT.search(then)):
+        return None
+    path, error = _resolve(verify_context, named_file)
+    if error or path is None or path.exists():
+        return None
+    return CheckResult(
+        then, False, "attest",
+        f"named file {named_file!r} does not exist — a clause "
+        f"about a file cannot pass on trust while the file "
+        f"is missing; create {named_file!r} with the promised "
+        f"content")
+
+
 def _attest_or_floor(then: str, verify_context: VerifyContext) -> CheckResult:
     """The attestation fallback, with the issue #22 existence floor.
 
@@ -918,19 +1036,42 @@ def _attest_or_floor(then: str, verify_context: VerifyContext) -> CheckResult:
     retired covers clause is never absence intent: it promises
     its target exists, even when the filename itself contains an
     absence word."""
-    named_file = _named_file(then)
-    if named_file and (_legacy_covers_target(then) is not None
-                       or not _ABSENCE_INTENT.search(then)):
-        path, error = _resolve(verify_context, named_file)
-        if not error and path is not None and not path.exists():
-            return CheckResult(
-                then, False, "attest",
-                f"named file {named_file!r} does not exist — a clause "
-                f"about a file cannot pass on trust while the file "
-                f"is missing; create {named_file!r} with the promised "
-                f"content")
+    floor = _floor_missing_file(then, verify_context)
+    if floor is not None:
+        return floor
     return CheckResult(then, True, "attest",
                        "no verifier matched — taking the model's word")
+
+
+def _accumulate_promised(clause: str, promised: list[str], excluded: set[str]) -> None:
+    """Fold one Then clause into the promised/excluded sets.
+
+    A parsed clause's subject is its verifier's target; a prose
+    clause's subject is a quoted file it names. not_exists (or
+    absence-intent prose) excludes; anything else promises, unless
+    already promised. A retired covers clause counts as a positive
+    promise, never absence intent."""
+    clause = clause.strip()
+    if not clause:
+        return
+    parsed = parse_then(clause)
+    if parsed:
+        verb, path, _value = parsed
+        if path is None:
+            return
+        if verb == "not_exists":
+            excluded.add(path)
+        elif path not in promised:
+            promised.append(path)
+        return
+    named_file = _named_file(clause)
+    if named_file is None:
+        return
+    if (_legacy_covers_target(clause) is None
+            and _ABSENCE_INTENT.search(clause)):
+        excluded.add(named_file)
+    elif named_file not in promised:
+        promised.append(named_file)
 
 
 def promised_deliverables(steps) -> list[str]:
@@ -946,27 +1087,7 @@ def promised_deliverables(steps) -> list[str]:
     excluded: set[str] = set()
     for step in steps:
         for clause in (step.done_when or "").split("\n"):
-            clause = clause.strip()
-            if not clause:
-                continue
-            parsed = parse_then(clause)
-            if parsed:
-                verb, path, _value = parsed
-                if path is None:
-                    continue
-                if verb == "not_exists":
-                    excluded.add(path)
-                elif path not in promised:
-                    promised.append(path)
-                continue
-            named_file = _named_file(clause)
-            if named_file is None:
-                continue
-            if (_legacy_covers_target(clause) is None
-                    and _ABSENCE_INTENT.search(clause)):
-                excluded.add(named_file)
-            elif named_file not in promised:
-                promised.append(named_file)
+            _accumulate_promised(clause, promised, excluded)
     return sorted(relative_path for relative_path in promised if relative_path not in excluded)
 
 
@@ -991,6 +1112,39 @@ def _check_verifier(check) -> str | None:
     return getattr(check, "verifier", None)
 
 
+def _trusted_deliverables(step, promised: set[str]) -> list[str]:
+    """Promised deliverables one finished step rests entirely on
+    trust for, else [].
+
+    A step counts when it finished done, its recorded checks are
+    all the attestation fallback, and at least one file its Thens
+    name is a promised deliverable. A prose Then on a read step
+    names no promised file and does not taint the run. A waived
+    step keeps its own separate flag and never counts here, and a
+    failed step cannot taint a run that never completed."""
+    if getattr(step, "status", None) != "done":
+        return []
+    if getattr(step, "verify_waived", False):
+        return []
+    checks = getattr(step, "verify", None) or []
+    if not checks or not all(_check_verifier(c) == "attest"
+                             for c in checks):
+        return []
+    named: set[str] = set()
+    for clause in (step.done_when or "").split("\n"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        parsed = parse_then(clause)
+        if parsed and parsed[1]:
+            named.add(parsed[1])
+            continue
+        named_file = _named_file(clause)
+        if named_file:
+            named.add(named_file)
+    return sorted(f for f in named if f in promised)
+
+
 def trust_only_steps(steps) -> list[dict]:
     """Steps whose deliverable rests entirely on trust (issue #37).
 
@@ -1005,27 +1159,7 @@ def trust_only_steps(steps) -> list[dict]:
     promised = set(promised_deliverables(steps))
     out: list[dict] = []
     for step in steps:
-        if getattr(step, "status", None) != "done":
-            continue
-        if getattr(step, "verify_waived", False):
-            continue
-        checks = getattr(step, "verify", None) or []
-        if not checks or not all(_check_verifier(c) == "attest"
-                                 for c in checks):
-            continue
-        named: set[str] = set()
-        for clause in (step.done_when or "").split("\n"):
-            clause = clause.strip()
-            if not clause:
-                continue
-            parsed = parse_then(clause)
-            if parsed and parsed[1]:
-                named.add(parsed[1])
-                continue
-            named_file = _named_file(clause)
-            if named_file:
-                named.add(named_file)
-        deliverables = sorted(f for f in named if f in promised)
+        deliverables = _trusted_deliverables(step, promised)
         if deliverables:
             out.append({"step": step.id, "deliverables": deliverables})
     return out

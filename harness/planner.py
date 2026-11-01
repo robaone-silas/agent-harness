@@ -989,27 +989,36 @@ def _unreferenced_priors_feedback(step: PlanStep, prior_output_paths: list[str])
             f"so do not try to read it.")
 
 
-def _collect_covers_targets_and_items(step: PlanStep, steps: list[PlanStep]) -> tuple[list[str], list[str]]:
+def _accumulate_covers_clause(then_clause: str, steps_by_id: dict,
+                              target_names: list[str],
+                              covered_items: list[str]) -> None:
+    """Fold one Then clause into the covers targets/items, when it
+    is a covers clause naming a known source step."""
     from . import verify as _verify
+    then_clause = then_clause.strip()
+    if not then_clause or _verify.match_verifier(then_clause) != "covers":
+        return
+    step_match = _re.search(r"step\s+(\d+)", then_clause)
+    if not step_match:
+        return
+    source_step = steps_by_id.get(int(step_match.group(1)))
+    if source_step is None:
+        return
+    parsed_clause = _verify.parse_then(then_clause)
+    if parsed_clause and parsed_clause[1]:
+        target_names.append(parsed_clause[1])
+    for item in source_step.source_items or []:
+        if item not in covered_items:
+            covered_items.append(item)
+
+
+def _collect_covers_targets_and_items(step: PlanStep, steps: list[PlanStep]) -> tuple[list[str], list[str]]:
     steps_by_id = {plan_step.id: plan_step for plan_step in steps}
     covered_items: list[str] = []
     target_names: list[str] = []
     for then_clause in (step.done_when or "").split("\n"):
-        then_clause = then_clause.strip()
-        if not then_clause or _verify.match_verifier(then_clause) != "covers":
-            continue
-        step_match = _re.search(r"step\s+(\d+)", then_clause)
-        if not step_match:
-            continue
-        source_step = steps_by_id.get(int(step_match.group(1)))
-        if source_step is None:
-            continue
-        parsed_clause = _verify.parse_then(then_clause)
-        if parsed_clause and parsed_clause[1]:
-            target_names.append(parsed_clause[1])
-        for item in source_step.source_items or []:
-            if item not in covered_items:
-                covered_items.append(item)
+        _accumulate_covers_clause(then_clause, steps_by_id,
+                                  target_names, covered_items)
     return target_names, covered_items
 
 
@@ -1037,6 +1046,24 @@ def _missing_covers_feedback(targets: list[str], missing_items: list[str]) -> st
             f"they contain. If a named file genuinely is not a "
             f"source for this step, answer DONE: again and say "
             f"why in one sentence.")
+
+
+def _gate_missing_coverage(step: PlanStep, steps: list[PlanStep],
+                           sub_steps) -> str | None:
+    """Coverage-stage pushback for one gate call, or None.
+
+    Issue #17: when the step carries a covers clause, the listing
+    step's source items are compared against the files read so far
+    in the run. An unread source file draws a pushback naming it.
+    This stage ignores verify_now on purpose and is evaluated
+    before stage 2."""
+    targets, covered_items = _collect_covers_targets_and_items(step, steps)
+    if not covered_items:
+        return None
+    missing_items = _find_missing_covered_items(covered_items, steps, step, sub_steps)
+    if not missing_items:
+        return None
+    return _missing_covers_feedback(targets, missing_items)
 
 
 def _has_work_after_prior_read(sub_steps, read_index: int, prior_output_paths: list[str]) -> bool:
@@ -1098,11 +1125,9 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
         if read_index is None:
             return _unreferenced_priors_feedback(step, prior_output_paths)
 
-        targets, covered_items = _collect_covers_targets_and_items(step, steps)
-        if covered_items:
-            missing_items = _find_missing_covered_items(covered_items, steps, step, sub_steps)
-            if missing_items:
-                return _missing_covers_feedback(targets, missing_items)
+        coverage_feedback = _gate_missing_coverage(step, steps, sub_steps)
+        if coverage_feedback is not None:
+            return coverage_feedback
 
         if _has_work_after_prior_read(sub_steps, read_index, prior_output_paths):
             return None
@@ -1121,6 +1146,22 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
         return _unchanged_after_read_feedback(step, prior_output_paths)
 
     return gate
+
+
+def _constrained_subjects(clauses: list[str]) -> set[str]:
+    """Files the step's clauses constrain rather than produce:
+    absence clauses (the file is meant to be gone) and preservation
+    clauses (the file is meant to be left as it was). Collected
+    across the whole step first, so an existence clause naming the
+    same file cannot resurrect it as a write target."""
+    from . import verify as _verify
+    constrained: set[str] = set()
+    for clause in clauses:
+        if _verify.absence_intent(clause) or _verify.preservation_intent(clause):
+            subject_file = _verify.then_subject_file(clause)
+            if subject_file:
+                constrained.add(subject_file)
+    return constrained
 
 
 def _then_named_outputs(step: PlanStep) -> list[str]:
@@ -1152,12 +1193,7 @@ def _then_named_outputs(step: PlanStep) -> list[str]:
     clauses = [clause.strip()
                for clause in (step.done_when or "").split("\n")]
     clauses = [clause for clause in clauses if clause]
-    constrained_subjects: set[str] = set()
-    for clause in clauses:
-        if _verify.absence_intent(clause) or _verify.preservation_intent(clause):
-            subject_file = _verify.then_subject_file(clause)
-            if subject_file:
-                constrained_subjects.add(subject_file)
+    constrained_subjects = _constrained_subjects(clauses)
     outputs: list[str] = []
     for clause in clauses:
         subject_file = _verify.then_subject_file(clause)
@@ -1182,26 +1218,38 @@ def _is_content_bearing_pass(verification_result) -> bool:
     return any(check.verifier in _CONTENT_BEARING_VERIFIERS for check in verification_result.checks)
 
 
-def _record_attempt_metrics(step: PlanStep, attempts: list[dict]):
-    if not attempts:
-        return
+def _collect_attempt_args(attempts: list[dict], step: PlanStep) -> None:
+    """Dump every attempted sub-step's tool-call args onto the step,
+    for the read-coverage audit (issue #17)."""
     import json as _json
     for attempt in attempts:
         for sub_step in attempt.get("sub_steps") or []:
             if sub_step.tool and sub_step.args:
                 step.touched_args.add(_json.dumps(sub_step.args, default=str))
 
-    last_sub_steps = attempts[-1].get("sub_steps") or []
+
+def _last_attempt_tool_summary(last_sub_steps: list) -> str | None:
+    """One-line tool usage summary for the last attempt, or None
+    when it used no tools."""
     tool_counts: dict[str, int] = {}
     total_output_lines = 0
     for sub_step in last_sub_steps:
         if sub_step.tool:
             tool_counts[sub_step.tool] = tool_counts.get(sub_step.tool, 0) + 1
             total_output_lines += len((sub_step.result or "").splitlines())
-    if tool_counts:
-        step.tool_summary = (
-            ", ".join(f"{tool_name} x{count}" for tool_name, count in tool_counts.items())
+    if not tool_counts:
+        return None
+    return (", ".join(f"{tool_name} x{count}" for tool_name, count in tool_counts.items())
             + f"; {total_output_lines} lines of tool output")
+
+
+def _record_attempt_metrics(step: PlanStep, attempts: list[dict]):
+    if not attempts:
+        return
+    _collect_attempt_args(attempts, step)
+    summary = _last_attempt_tool_summary(attempts[-1].get("sub_steps") or [])
+    if summary is not None:
+        step.tool_summary = summary
 
 
 def _write_step_to_store(run_store, step: PlanStep, attempts: list[dict], status: str):

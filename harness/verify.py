@@ -87,10 +87,10 @@ def _pick(*groups: str | None) -> str | None:
     return next((g for g in groups if g is not None), None)
 
 
-def _resolve(ctx: VerifyContext, rel: str | None) -> tuple[object | None, str]:
+def _resolve(verify_context: VerifyContext, rel: str | None) -> tuple[object | None, str]:
     """Resolve rel inside the jail. Returns (path, '') or (None, error)."""
     try:
-        return ctx.jail.resolve((rel or "").strip()), ""
+        return verify_context.jail.resolve((rel or "").strip()), ""
     except Refusal as e:
         return None, str(e)
 
@@ -155,11 +155,11 @@ _SHOULD = r"""(?:should\s+)?"""
 @verifier("contains_exactly",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?:exactly|the\s+exact\s+content)\s+{_QTEXT}\s*$""")
-def _v_contains_exactly(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_contains_exactly(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     text = _pick(*m.groups()[4:7])
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "contains_exactly", err)
     if not p.is_file():
@@ -176,11 +176,11 @@ def _v_contains_exactly(m: re.Match, ctx: VerifyContext) -> CheckResult:
 @verifier("has_lines",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}(?:has|contains?)\s+"""
           rf"""(\d+)\s+lines?\s*[.!]?\s*$""")
-def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_has_lines(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     n = int(m.group(5))
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "has_lines", err)
     if not p.is_file():
@@ -196,7 +196,7 @@ def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
 @verifier("indexes",
           rf"""^{_FILE}{_QPATH}\s+indexes\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
-def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_indexes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     """The productive counterpart of covers: the step declares that
     its target is an index of step N's files, built by the harness
     indexing primitive (or, on the fallback path, by the executor).
@@ -206,11 +206,11 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     step_no = int(m.group(5))
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "indexes", err)
-    items = list(ctx.prior_items.get(step_no) or [])
-    excluded = ctx.excluded_files.get(rel) or set()
+    items = list(verify_context.prior_items.get(step_no) or [])
+    excluded = verify_context.excluded_files.get(rel) or set()
     if excluded:
         # Issue #47 option 1: a completeness check honors the plan's
         # contents-of excludes clauses for this deliverable.
@@ -362,17 +362,17 @@ def _harvest(text: str) -> list[tuple[str, str]]:
     return pairs
 
 
-def _record_text(ctx: VerifyContext, step_no: int) -> str | None:
+def _record_text(verify_context: VerifyContext, step_no: int) -> str | None:
     """The stored record of an earlier step in the current run, or
     None when it cannot be read (no run store, an ad-hoc context)."""
     try:
-        latest = ctx.jail.resolve(".harness/latest.txt")
+        latest = verify_context.jail.resolve(".harness/latest.txt")
         if not latest.is_file():
             return None
         lines = latest.read_text(errors="replace").strip().splitlines()
         if not lines or not lines[0].strip():
             return None
-        p = ctx.jail.resolve(
+        p = verify_context.jail.resolve(
             f".harness/runs/{lines[0].strip()}/step-{step_no:02d}.md")
         if not p.is_file():
             return None
@@ -395,15 +395,15 @@ def _norm(text: str) -> str:
           # contents-of prefix).
           rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
-def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_accounts_for(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     step_no = int(m.group(5))
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "accounts_for", err)
-    items = list(ctx.prior_items.get(step_no) or [])
-    excluded = ctx.excluded_files.get(rel) or set()
+    items = list(verify_context.prior_items.get(step_no) or [])
+    excluded = verify_context.excluded_files.get(rel) or set()
     if excluded:
         # Issue #47 option 1: see _v_indexes. Same subtraction for
         # the same reason, before the empty-set check.
@@ -440,7 +440,7 @@ def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
 
 @verifier("preserves",
           rf"""^{_FILE}{_QPATH}\s+preserves?\s+(.+?)\s+from\s+(.+?)\s*[.!]?\s*$""")
-def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_preserves(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     """Field preservation: every value the named source steps read
     for each named field must appear in the deliverable. Strict, like
     indexes: a compilation that drops one customer's status has not
@@ -449,7 +449,7 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
     same honesty rule as covers with no measurable source list."""
     rel = _pick(*m.groups()[0:4])
     fields = _parse_fields(m.group(5))
-    refs = [r for r in _refs_in(m.group(6)) if r != ctx.step_id]
+    refs = [r for r in _refs_in(m.group(6)) if r != verify_context.step_id]
     then = m.string.strip()
     if not fields or not refs:
         if not fields and not refs:
@@ -462,7 +462,7 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
             detail = ("the clause names no source steps: "
                       "preservation not checked")
         return CheckResult(then, True, "preserves", detail)
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "preserves", err)
     ref_list = ", ".join(str(r) for r in refs)
@@ -472,7 +472,7 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
                            f"preserve {', '.join(fields)} from "
                            f"step(s) {ref_list}")
     content = _norm(p.read_text(errors="replace"))
-    records = {r: _record_text(ctx, r) for r in refs}
+    records = {r: _record_text(verify_context, r) for r in refs}
     total = 0
     missing: list[tuple[str, int, str]] = []
     unchecked: list[str] = []
@@ -528,13 +528,13 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
           rf"""^{_FILE}{_QPATH}\s+excludes?\s+"""
           rf"""(?:the\s+contents\s+of\s+{_QPATH}|{_QTEXT}|"""
           rf"""(.+?)\s+from\s+(.+?))\s*[.!]?\s*$""")
-def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_excludes(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     g = m.groups()
     rel = _pick(*g[0:4])
     contents_rel = _pick(*g[4:8])
     literal = _pick(*g[8:11])
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "excludes", err)
     if not p.is_file():
@@ -546,7 +546,7 @@ def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
     leaks: list[str] = []
     basis = ""
     if contents_rel is not None:
-        sp, serr = _resolve(ctx, contents_rel)
+        sp, serr = _resolve(verify_context, contents_rel)
         if serr or sp is None or not sp.is_file():
             return CheckResult(then, True, "excludes",
                                f"source file {contents_rel!r} not "
@@ -569,14 +569,14 @@ def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
         basis = f"the text {literal!r}"
     else:
         fields = _parse_fields(g[11] or "")
-        refs = [r for r in _refs_in(g[12] or "") if r != ctx.step_id]
+        refs = [r for r in _refs_in(g[12] or "") if r != verify_context.step_id]
         if not fields or not refs:
             return CheckResult(then, True, "excludes",
                                "the clause names no fields or no "
                                "source steps — exclusion not checked")
         guarded = []
         for r in refs:
-            for label, value in _harvest(_record_text(ctx, r) or ""):
+            for label, value in _harvest(_record_text(verify_context, r) or ""):
                 if any(_field_matches(f, label) for f in fields) \
                         and value not in guarded:
                     guarded.append(value)
@@ -604,11 +604,11 @@ def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
 @verifier("contains",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?!exactly\b|the\s+exact\s+content\b){_QTEXT}\s*$""")
-def _v_contains(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_contains(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     text = _pick(*m.groups()[4:7])
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "contains", err)
     if not p.is_file():
@@ -622,10 +622,10 @@ def _v_contains(m: re.Match, ctx: VerifyContext) -> CheckResult:
 
 @verifier("not_exists",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}(?:does\s+)?not\s+exist\s*[.!]?\s*$""")
-def _v_not_exists(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_not_exists(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "not_exists", err)
     if not p.exists():
@@ -636,10 +636,10 @@ def _v_not_exists(m: re.Match, ctx: VerifyContext) -> CheckResult:
 
 @verifier("exists",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}exists?\s*[.!]?\s*$""")
-def _v_exists(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_exists(m: re.Match, verify_context: VerifyContext) -> CheckResult:
     rel = _pick(*m.groups()[0:4])
     then = m.string.strip()
-    p, err = _resolve(ctx, rel)
+    p, err = _resolve(verify_context, rel)
     if err:
         return CheckResult(then, False, "exists", err)
     if p.exists():
@@ -711,7 +711,7 @@ def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
     return excluded
 
 
-def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
+def verify_step(thens: list[str], verify_context: VerifyContext) -> StepVerify:
     """Evaluate each Then clause. Unmatched phrasings fall back to attestation
     (ok=True) — the harness only fails what it can actually check."""
     checks: list[CheckResult] = []
@@ -723,10 +723,10 @@ def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
         for v in VERIFIERS:
             m = v.pattern.match(then)
             if m:
-                result = v.check(m, ctx)
+                result = v.check(m, verify_context)
                 break
         if result is None:
-            result = _attest_or_floor(then, ctx)
+            result = _attest_or_floor(then, verify_context)
         checks.append(result)
     return StepVerify(ok=all(c.ok for c in checks), checks=checks)
 
@@ -893,7 +893,7 @@ def then_subject_file(clause: str) -> str | None:
     return _named_file(clause)
 
 
-def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
+def _attest_or_floor(then: str, verify_context: VerifyContext) -> CheckResult:
     """The attestation fallback, with the issue #22 existence floor.
 
     Field failure (Daniel Okafor, 2026-10-04): a prose contains
@@ -911,7 +911,7 @@ def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     named_file = _named_file(then)
     if named_file and (_legacy_covers_target(then) is not None
                        or not _ABSENCE_INTENT.search(then)):
-        path, err = _resolve(ctx, named_file)
+        path, err = _resolve(verify_context, named_file)
         if not err and path is not None and not path.exists():
             return CheckResult(
                 then, False, "attest",

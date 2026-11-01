@@ -63,7 +63,7 @@ def check(name, cond, detail=""):
         raise AssertionError(name)
 
 
-def _ws(tmp, deliverable):
+def _make_jail(tmp, deliverable):
     root = Path(tmp)
     (root / "gig-gear-notes.txt").write_text(
         "Instructions for checking and maintaining performance gear.\n")
@@ -101,7 +101,7 @@ def _checks(jail, excluded, deliverable_clauses):
 def t_subcase_b_trap_gone():
     """Correct deliverable with indexes plus excludes passes both."""
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _ws(tmp, CORRECT)
+    jail = _make_jail(tmp, CORRECT)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
     check("helper finds the contents-of filename",
           excluded == {"business-inventory.txt": {"school-form.txt"}},
@@ -118,7 +118,7 @@ def t_subcase_b_trap_gone():
 def t_wrong_deliverable_fails_on_excludes():
     """Presence alone does not catch the leak; excludes does."""
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _ws(tmp, WRONG)
+    jail = _make_jail(tmp, WRONG)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
     result = _checks(jail, excluded, [INDEXES, EXCLUDES])
     by_name = {check_result.verifier: check_result for check_result in result.checks}
@@ -141,11 +141,11 @@ def t_no_excludes_identical_to_today():
     excluded = verify._excluded_files_for([listing, compile_step], 2)
     check("helper finds nothing without excludes clauses",
           excluded == {}, str(excluded))
-    jail = _ws(tmp, CORRECT)
+    jail = _make_jail(tmp, CORRECT)
     result = _checks(jail, excluded, [INDEXES])
     check("three-file deliverable fails indexes without excludes",
           not result.checks[0].ok, result.checks[0].detail)
-    jail = _ws(tmp, WRONG)
+    jail = _make_jail(tmp, WRONG)
     result = _checks(jail, excluded, [INDEXES])
     check("four-file deliverable passes indexes without excludes",
           result.checks[0].ok, result.checks[0].detail)
@@ -160,7 +160,7 @@ def t_redaction_shape_caveat():
     clause for the filename could restore it, but the planner
     would have to know to add one."""
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _ws(tmp, CORRECT)
+    jail = _make_jail(tmp, CORRECT)
     excluded = verify._excluded_files_for(_steps_with_excludes(), 2)
     result = _checks(jail, excluded, [INDEXES])
     check("indexes passes without the scrubbed filename present",
@@ -183,7 +183,7 @@ def t_non_contents_forms_subtract_nothing():
     check("fields form yields nothing",
           verify._excluded_files_for([fields], 2) == {})
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _ws(tmp, CORRECT)
+    jail = _make_jail(tmp, CORRECT)
     result = _checks(jail, {}, [INDEXES])
     check("indexes still requires the full listing",
           not result.checks[0].ok, result.checks[0].detail)
@@ -198,7 +198,7 @@ def t_scoping_same_deliverable_only():
     check("other deliverable exclusion is scoped away",
           excluded == {"other.txt": {"school-form.txt"}}, str(excluded))
     tmp = tempfile.mkdtemp(prefix="issue47-test-")
-    jail = _ws(tmp, CORRECT)
+    jail = _make_jail(tmp, CORRECT)
     result = _checks(jail, excluded, [INDEXES])
     check("indexes still requires school-form.txt for this deliverable",
           not result.checks[0].ok, result.checks[0].detail)

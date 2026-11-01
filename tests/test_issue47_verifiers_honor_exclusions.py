@@ -220,9 +220,9 @@ def t_scoping_earlier_or_same_step_only():
           == {"business-inventory.txt": {"school-form.txt"}})
 
 
-def t_unquoted_target_subtracts_nothing():
+def t_prose_target_subtracts_nothing():
     """A prose-target excludes clause does not parse, so it
-    subtracts nothing; a bare path-shaped contents source does."""
+    subtracts nothing."""
     prose = planner.PlanStep(
         id=2, instruction="compile",
         done_when="the output excludes the contents of the school form")
@@ -232,13 +232,15 @@ def t_unquoted_target_subtracts_nothing():
           is None)
     check("prose clause yields nothing",
           verify._excluded_files_for([prose], 2) == {})
-    bare = planner.PlanStep(
-        id=2, instruction="compile",
-        done_when='"business-inventory.txt" excludes the contents of '
-                  'school-form.txt')
+
+
+def t_bare_path_source_subtracts():
+    """A bare path-shaped contents source parses and subtracts."""
+    clause = '"business-inventory.txt" excludes the contents of school-form.txt'
+    bare = planner.PlanStep(id=2, instruction="compile", done_when=clause)
+    expected = {"business-inventory.txt": {"school-form.txt"}}
     check("bare path-shaped contents source parses and subtracts",
-          verify._excluded_files_for([bare], 2)
-          == {"business-inventory.txt": {"school-form.txt"}})
+          verify._excluded_files_for([bare], 2) == expected)
 
 
 ACCOUNTS_FOR = '"business-inventory.txt" accounts for the files from step 1'

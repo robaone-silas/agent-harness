@@ -94,8 +94,8 @@ class CapturingHandler(logging.Handler):
         self.records.append(record)
 
 
-def _capture_planner_logs():
-    logger = logging.getLogger("harness.planner")
+def _capture_logs(logger_name):
+    logger = logging.getLogger(logger_name)
     handler = CapturingHandler()
     logger.addHandler(handler)
     old_propagate = logger.propagate
@@ -103,7 +103,7 @@ def _capture_planner_logs():
     return logger, handler, old_propagate
 
 
-def _release_planner_logs(logger, handler, old_propagate):
+def _release_logs(logger, handler, old_propagate):
     logger.removeHandler(handler)
     logger.propagate = old_propagate
 
@@ -127,11 +127,11 @@ def t_gate_verify_now_raising_logs_and_keeps_pushback():
         raise RuntimeError("verifier blew up")
 
     gate, sub_steps = _gate_with_prior_read(raising_verify_now)
-    logger, handler, old_propagate = _capture_planner_logs()
+    logger, handler, old_propagate = _capture_logs("harness.grounding")
     try:
         result = gate(sub_steps)
     finally:
-        _release_planner_logs(logger, handler, old_propagate)
+        _release_logs(logger, handler, old_propagate)
     check("raising verify_now does not raise out of the gate",
           result is not None, str(result))
     check("raising verify_now keeps the pushback feedback",
@@ -145,11 +145,11 @@ def t_gate_verify_now_raising_logs_and_keeps_pushback():
 
 def t_gate_verify_now_passing_stays_silent():
     gate, sub_steps = _gate_with_prior_read(lambda: True)
-    logger, handler, old_propagate = _capture_planner_logs()
+    logger, handler, old_propagate = _capture_logs("harness.grounding")
     try:
         result = gate(sub_steps)
     finally:
-        _release_planner_logs(logger, handler, old_propagate)
+        _release_logs(logger, handler, old_propagate)
     check("passing verify_now silences the gate",
           result is None, str(result))
     check("passing verify_now logs nothing",
@@ -163,12 +163,12 @@ def t_run_store_write_failure_logs_and_does_not_raise():
             raise RuntimeError("disk is full")
 
     step = PlanStep(id=1, instruction="gather", done_when="")
-    logger, handler, old_propagate = _capture_planner_logs()
+    logger, handler, old_propagate = _capture_logs("harness.run_metrics")
     try:
         result = planner._write_step_to_store(
             RaisingStore(), step, [], "done")
     finally:
-        _release_planner_logs(logger, handler, old_propagate)
+        _release_logs(logger, handler, old_propagate)
     check("failing run-store write does not raise",
           result is None, str(result))
     check("failing run-store write is logged, not swallowed silently",

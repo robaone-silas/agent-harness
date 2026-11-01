@@ -22,7 +22,7 @@ Registry discipline (the expandability contract):
 """
 from __future__ import annotations
 
-import re
+import re as regular_expression
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -41,6 +41,12 @@ class VerifyContext:
     # Issue #17 part 2: the covers step's Intent line. An exhaustive cue
     # here makes covers strict just as one in the task does.
     intent: str = ""
+    # Issue #47 option 1: files excluded for each deliverable by
+    # contents-of excludes clauses on the current or earlier steps.
+    # _v_indexes and _v_accounts_for subtract the set for the
+    # clause's target from the expected set. Defaults to empty, so
+    # contexts built without it behave exactly as before.
+    excluded_files: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -60,8 +66,8 @@ class StepVerify:
 @dataclass
 class Verifier:
     name: str
-    pattern: re.Pattern
-    check: Callable[[re.Match, VerifyContext], CheckResult]
+    pattern: regular_expression.Pattern
+    check: Callable[[regular_expression.Match, VerifyContext], CheckResult]
 
 
 VERIFIERS: list[Verifier] = []
@@ -69,11 +75,11 @@ VERIFIERS: list[Verifier] = []
 
 def verifier(name: str, pattern: str):
     """Register a verifier. The pattern's groups feed the check function."""
-    def deco(fn: Callable[[re.Match, VerifyContext], CheckResult]) -> Verifier:
-        v = Verifier(name, re.compile(pattern, re.IGNORECASE), fn)
-        VERIFIERS.append(v)
-        return v
-    return deco
+    def decorator(verify_function: Callable[[regular_expression.Match, VerifyContext], CheckResult]) -> Verifier:
+        verifier = Verifier(name, regular_expression.compile(pattern, regular_expression.IGNORECASE), verify_function)
+        VERIFIERS.append(verifier)
+        return verifier
+    return decorator
 
 
 def _pick(*groups: str | None) -> str | None:
@@ -81,10 +87,10 @@ def _pick(*groups: str | None) -> str | None:
     return next((g for g in groups if g is not None), None)
 
 
-def _resolve(ctx: VerifyContext, rel: str | None) -> tuple[object | None, str]:
-    """Resolve rel inside the jail. Returns (path, '') or (None, error)."""
+def _resolve(verify_context: VerifyContext, relative_path: str | None) -> tuple[object | None, str]:
+    """Resolve a relative path inside the jail. Returns (path, '') or (None, error)."""
     try:
-        return ctx.jail.resolve((rel or "").strip()), ""
+        return verify_context.jail.resolve((relative_path or "").strip()), ""
     except Refusal as e:
         return None, str(e)
 
@@ -92,7 +98,7 @@ def _resolve(ctx: VerifyContext, rel: str | None) -> tuple[object | None, str]:
 # Deferral language: a document that promises its own content instead of
 # containing it. Scanned by the covers verifier (v0.8.1 field failure: a
 # deliverable whose whole substance was "(Content to be filled in...)").
-_DEFERRALS = [re.compile(p, re.IGNORECASE) for p in (
+_DEFERRALS = [regular_expression.compile(pattern, regular_expression.IGNORECASE) for pattern in (
     r"to be filled in", r"to be completed", r"to be written",
     r"placeholder", r"lorem ipsum", r"content goes here",
     r"will be added", r"coming soon", r"\bTODO\b", r"\bTBD\b",
@@ -100,10 +106,10 @@ _DEFERRALS = [re.compile(p, re.IGNORECASE) for p in (
 
 
 def _deferral_in(text: str) -> str | None:
-    for rx in _DEFERRALS:
-        m = rx.search(text or "")
-        if m:
-            return m.group(0)
+    for deferral_pattern in _DEFERRALS:
+        match = deferral_pattern.search(text or "")
+        if match:
+            return match.group(0)
     return None
 
 
@@ -122,7 +128,7 @@ def collect_step_items(sub_steps) -> list[str]:
             lines = s.result.splitlines()
         elif s.tool == "exec":
             cmd = str((s.args or {}).get("command", ""))
-            if re.match(r"\s*(ls|find)\b", cmd):
+            if regular_expression.match(r"\s*(ls|find)\b", cmd):
                 lines = [ln for ln in s.result.splitlines()
                          if not ln.startswith("exit=")]
         if lines is None:
@@ -149,88 +155,101 @@ _SHOULD = r"""(?:should\s+)?"""
 @verifier("contains_exactly",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?:exactly|the\s+exact\s+content)\s+{_QTEXT}\s*$""")
-def _v_contains_exactly(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    text = _pick(*m.groups()[4:7])
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "contains_exactly", err)
-    if not p.is_file():
+def _v_contains_exactly(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    relative_path = _pick(*match.groups()[0:4])
+    text = _pick(*match.groups()[4:7])
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "contains_exactly", error)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "contains_exactly",
-                           f"{rel!r} is not a file — expected exactly {text!r}")
-    got = p.read_text().strip()
+                           f"{relative_path!r} is not a file — expected exactly {text!r}")
+    got = resolved_path.read_text().strip()
     if got == text:
         return CheckResult(then, True, "contains_exactly",
-                           f"{rel!r} contains exactly {text!r}")
+                           f"{relative_path!r} contains exactly {text!r}")
     return CheckResult(then, False, "contains_exactly",
-                       f"{rel!r}: got {got!r}, expected exactly {text!r}")
+                       f"{relative_path!r}: got {got!r}, expected exactly {text!r}")
 
 
 @verifier("has_lines",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}(?:has|contains?)\s+"""
           rf"""(\d+)\s+lines?\s*[.!]?\s*$""")
-def _v_has_lines(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    n = int(m.group(5))
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "has_lines", err)
-    if not p.is_file():
+def _v_has_lines(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    relative_path = _pick(*match.groups()[0:4])
+    expected_line_count = int(match.group(5))
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "has_lines", error)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "has_lines",
-                           f"{rel!r} is not a file — expected {n} lines")
-    got = len(p.read_text().splitlines())
-    if got == n:
-        return CheckResult(then, True, "has_lines", f"{rel!r} has {n} lines")
+                           f"{relative_path!r} is not a file — expected {expected_line_count} lines")
+    got = len(resolved_path.read_text().splitlines())
+    if got == expected_line_count:
+        return CheckResult(then, True, "has_lines", f"{relative_path!r} has {expected_line_count} lines")
     return CheckResult(then, False, "has_lines",
-                       f"{rel!r} has {got} lines, expected {n}")
+                       f"{relative_path!r} has {got} lines, expected {expected_line_count}")
 
 
 @verifier("indexes",
           rf"""^{_FILE}{_QPATH}\s+indexes\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
-def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_indexes(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
     """The productive counterpart of covers: the step declares that
     its target is an index of step N's files, built by the harness
     indexing primitive (or, on the fallback path, by the executor).
     Strict by definition: an index that omits a source file is not an
     index of it, so every recorded item must appear, with no
     at-least-half floor and no exhaustive-cue condition."""
-    rel = _pick(*m.groups()[0:4])
-    step_no = int(m.group(5))
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "indexes", err)
-    items = list(ctx.prior_items.get(step_no) or [])
+    relative_path = _pick(*match.groups()[0:4])
+    step_number = int(match.group(5))
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "indexes", error)
+    items = list(verify_context.prior_items.get(step_number) or [])
+    excluded = verify_context.excluded_files.get(relative_path) or set()
+    had_items = bool(items)
+    if excluded:
+        # Issue #47 option 1: a completeness check honors the plan's
+        # contents-of excludes clauses for this deliverable.
+        # Subtraction runs before the empty-set check, so a fully
+        # excluded listing still reports ok, but with its own detail:
+        # it had a list, and every item in it was excluded.
+        items = [item for item in items if item not in excluded]
     if not items:
-        return CheckResult(then, True, "indexes",
-                           f"step {step_no} produced no file list — "
-                           f"coverage not checked")
-    if not p.is_file():
+        if had_items:
+            detail = (f"all files from step {step_number} excluded: "
+                      f"coverage not checked")
+        else:
+            detail = (f"step {step_number} produced no file list: "
+                      f"coverage not checked")
+        return CheckResult(then, True, "indexes", detail)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "indexes",
-                           f"{rel!r} is not a file — expected it to "
+                           f"{relative_path!r} is not a file — expected it to "
                            f"index the {len(items)} files from step "
-                           f"{step_no}")
-    content = p.read_text(errors="replace")
+                           f"{step_number}")
+    content = resolved_path.read_text(errors="replace")
     bad = _deferral_in(content)
     if bad:
         return CheckResult(then, False, "indexes",
-                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"{relative_path!r} contains a deferral ({bad!r}) — "
                            f"the index must be finished, not promised")
     covered = [i for i in items if i in content]
     if len(covered) == len(items):
         return CheckResult(then, True, "indexes",
-                           f"{rel!r} indexes all {len(items)} files "
-                           f"from step {step_no}")
+                           f"{relative_path!r} indexes all {len(items)} files "
+                           f"from step {step_number}")
     missing = [i for i in items if i not in content]
-    detail = (f"{rel!r} indexes {len(covered)} of {len(items)} files "
-              f"from step {step_no}; an index must name every file; "
+    detail = (f"{relative_path!r} indexes {len(covered)} of {len(items)} files "
+              f"from step {step_number}; an index must name every file; "
               f"missing include: " + ", ".join(missing[:12]))
     if len(missing) > 12:
         detail += (f" and {len(missing) - 12} more "
-                   f"(see step {step_no}'s stored output)")
+                   f"(see step {step_number}'s stored output)")
     return CheckResult(then, False, "indexes", detail)
 
 
@@ -256,21 +275,21 @@ def _v_indexes(m: re.Match, ctx: VerifyContext) -> CheckResult:
 # on both sides of each separator, adjacent repetitions can split the
 # same spaces between them and backtrack exponentially when the tail
 # never reaches a number.
-_PRES_SEG = re.compile(
+_PRES_SEG = regular_expression.compile(
     r"\bsteps?\s+(\d+(?:\s*(?:(?:,|and|through|to|[-–—])\s*)+\d+)*)",
-    re.IGNORECASE)
-_PRES_TOKEN = re.compile(r"\d+|through|to|and|,|[-–—]", re.IGNORECASE)
+    regular_expression.IGNORECASE)
+_PRES_TOKEN = regular_expression.compile(r"\d+|through|to|and|,|[-–—]", regular_expression.IGNORECASE)
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
 
 
 def _refs_in(text: str) -> list[int]:
-    refs = [int(n) for n in re.findall(r"\bstep\s+(\d+)", text or "",
-                                       re.IGNORECASE)]
-    for m in _PRES_SEG.finditer(text or ""):
+    refs = [int(step_number_string) for step_number_string in regular_expression.findall(r"\bstep\s+(\d+)", text or "",
+                                       regular_expression.IGNORECASE)]
+    for match in _PRES_SEG.finditer(text or ""):
         nums: list[int] = []
         gaps: list[str] = []
         pending: list[str] = []
-        for tok in _PRES_TOKEN.findall(m.group(1)):
+        for tok in _PRES_TOKEN.findall(match.group(1)):
             if tok.isdigit():
                 if nums:
                     # One connector per numeric gap: the last separator
@@ -293,10 +312,10 @@ def _refs_in(text: str) -> list[int]:
             refs.append(num)
     seen: set[int] = set()
     out: list[int] = []
-    for r in refs:
-        if r not in seen:
-            seen.add(r)
-            out.append(r)
+    for referenced_step_id in refs:
+        if referenced_step_id not in seen:
+            seen.add(referenced_step_id)
+            out.append(referenced_step_id)
     return out
 
 
@@ -315,17 +334,17 @@ def _field_key(phrase: str) -> str:
 
 
 def _field_matches(field: str, label: str) -> bool:
-    f, l = _field_key(field), _field_key(label)
-    return l == f or l.startswith(f + " ")
+    field_name, l = _field_key(field), _field_key(label)
+    return l == field_name or l.startswith(field_name + " ")
 
 
 def _parse_fields(text: str) -> list[str]:
     fields: list[str] = []
-    for chunk in re.split(r",|\band\b", text or "", flags=re.IGNORECASE):
-        f = re.sub(r"\s+", " ", chunk.strip().lower())
-        f = re.sub(r"^the\s+", "", f)
-        if f and re.fullmatch(r"[a-z][a-z0-9 \-]*", f) and f not in fields:
-            fields.append(f)
+    for chunk in regular_expression.split(r",|\band\b", text or "", flags=regular_expression.IGNORECASE):
+        field = regular_expression.sub(r"\s+", " ", chunk.strip().lower())
+        field = regular_expression.sub(r"^the\s+", "", field)
+        if field and regular_expression.fullmatch(r"[a-z][a-z0-9 \-]*", field) and field not in fields:
+            fields.append(field)
     return fields
 
 
@@ -334,41 +353,41 @@ def _parse_fields(text: str) -> list[str]:
 # semicolon, or the line's end, the way the source notes punctuate.
 # Label words join on spaces only, never across lines: a bare label
 # on its own line ("Result:") must not swallow the next line's label.
-_PAIR = re.compile(
+_PAIR = regular_expression.compile(
     r"([A-Z][A-Za-z]+(?:[ \t]+[A-Z][A-Za-z]+)*)[ \t]*:[ \t]*([^\n.;]+)")
 
 
 def _harvest(text: str) -> list[tuple[str, str]]:
     pairs: list[tuple[str, str]] = []
-    for m in _PAIR.finditer(text or ""):
-        label = re.sub(r"\s+", " ", m.group(1).strip().lower())
-        value = re.sub(r"\s+", " ", m.group(2).strip())
+    for match in _PAIR.finditer(text or ""):
+        label = regular_expression.sub(r"\s+", " ", match.group(1).strip().lower())
+        value = regular_expression.sub(r"\s+", " ", match.group(2).strip())
         if value and (label, value) not in pairs:
             pairs.append((label, value))
     return pairs
 
 
-def _record_text(ctx: VerifyContext, step_no: int) -> str | None:
+def _record_text(verify_context: VerifyContext, step_no: int) -> str | None:
     """The stored record of an earlier step in the current run, or
     None when it cannot be read (no run store, an ad-hoc context)."""
     try:
-        latest = ctx.jail.resolve(".harness/latest.txt")
+        latest = verify_context.jail.resolve(".harness/latest.txt")
         if not latest.is_file():
             return None
         lines = latest.read_text(errors="replace").strip().splitlines()
         if not lines or not lines[0].strip():
             return None
-        p = ctx.jail.resolve(
+        resolved_path = verify_context.jail.resolve(
             f".harness/runs/{lines[0].strip()}/step-{step_no:02d}.md")
-        if not p.is_file():
+        if not resolved_path.is_file():
             return None
-        return p.read_text(errors="replace")
+        return resolved_path.read_text(errors="replace")
     except (Refusal, OSError):
         return None
 
 
 def _norm(text: str) -> str:
-    return re.sub(r"\s+", " ", text or "").casefold()
+    return regular_expression.sub(r"\s+", " ", text or "").casefold()
 
 
 @verifier("accounts_for",
@@ -381,57 +400,67 @@ def _norm(text: str) -> str:
           # contents-of prefix).
           rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+files\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
-def _v_accounts_for(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    step_no = int(m.group(5))
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "accounts_for", err)
-    items = list(ctx.prior_items.get(step_no) or [])
+def _v_accounts_for(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    relative_path = _pick(*match.groups()[0:4])
+    step_number = int(match.group(5))
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "accounts_for", error)
+    items = list(verify_context.prior_items.get(step_number) or [])
+    excluded = verify_context.excluded_files.get(relative_path) or set()
+    had_items = bool(items)
+    if excluded:
+        # Issue #47 option 1: see _v_indexes. Same subtraction and
+        # same all-excluded distinction, before the empty-set check.
+        items = [item for item in items if item not in excluded]
     if not items:
-        return CheckResult(then, True, "accounts_for",
-                           f"step {step_no} produced no file list — "
-                           f"accounting not checked")
-    if not p.is_file():
+        if had_items:
+            detail = (f"all files from step {step_number} excluded: "
+                      f"accounting not checked")
+        else:
+            detail = (f"step {step_number} produced no file list: "
+                      f"accounting not checked")
+        return CheckResult(then, True, "accounts_for", detail)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "accounts_for",
-                           f"{rel!r} is not a file — expected it to "
+                           f"{relative_path!r} is not a file — expected it to "
                            f"account for the {len(items)} files from "
-                           f"step {step_no}")
-    content = p.read_text(errors="replace")
+                           f"step {step_number}")
+    content = resolved_path.read_text(errors="replace")
     bad = _deferral_in(content)
     if bad:
         return CheckResult(then, False, "accounts_for",
-                           f"{rel!r} contains a deferral ({bad!r}) — "
+                           f"{relative_path!r} contains a deferral ({bad!r}) — "
                            f"the document must be finished, not promised")
     missing = [i for i in items if i not in content]
     if not missing:
         return CheckResult(then, True, "accounts_for",
-                           f"{rel!r} accounts for all {len(items)} "
-                           f"files from step {step_no}")
-    detail = (f"{rel!r} accounts for {len(items) - len(missing)} of "
-              f"{len(items)} files from step {step_no}; every listed "
+                           f"{relative_path!r} accounts for all {len(items)} "
+                           f"files from step {step_number}")
+    detail = (f"{relative_path!r} accounts for {len(items) - len(missing)} of "
+              f"{len(items)} files from step {step_number}; every listed "
               f"file must be accounted for; missing include: "
               + ", ".join(missing[:12]))
     if len(missing) > 12:
         detail += (f" and {len(missing) - 12} more "
-                   f"(see step {step_no}'s stored output)")
+                   f"(see step {step_number}'s stored output)")
     return CheckResult(then, False, "accounts_for", detail)
 
 
 @verifier("preserves",
           rf"""^{_FILE}{_QPATH}\s+preserves?\s+(.+?)\s+from\s+(.+?)\s*[.!]?\s*$""")
-def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
+def _v_preserves(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
     """Field preservation: every value the named source steps read
     for each named field must appear in the deliverable. Strict, like
     indexes: a compilation that drops one customer's status has not
     preserved the records. A field whose label never appears in the
     source records cannot be checked and is reported as such, the
     same honesty rule as covers with no measurable source list."""
-    rel = _pick(*m.groups()[0:4])
-    fields = _parse_fields(m.group(5))
-    refs = [r for r in _refs_in(m.group(6)) if r != ctx.step_id]
-    then = m.string.strip()
+    relative_path = _pick(*match.groups()[0:4])
+    fields = _parse_fields(match.group(5))
+    refs = [referenced_step_id for referenced_step_id in _refs_in(match.group(6)) if referenced_step_id != verify_context.step_id]
+    then = match.string.strip()
     if not fields or not refs:
         if not fields and not refs:
             detail = ("the clause names no fields and no source "
@@ -443,34 +472,34 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
             detail = ("the clause names no source steps: "
                       "preservation not checked")
         return CheckResult(then, True, "preserves", detail)
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "preserves", err)
-    ref_list = ", ".join(str(r) for r in refs)
-    if not p.is_file():
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "preserves", error)
+    ref_list = ", ".join(str(referenced_step_id) for referenced_step_id in refs)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "preserves",
-                           f"{rel!r} is not a file — expected it to "
+                           f"{relative_path!r} is not a file — expected it to "
                            f"preserve {', '.join(fields)} from "
                            f"step(s) {ref_list}")
-    content = _norm(p.read_text(errors="replace"))
-    records = {r: _record_text(ctx, r) for r in refs}
+    content = _norm(resolved_path.read_text(errors="replace"))
+    records = {referenced_step_id: _record_text(verify_context, referenced_step_id) for referenced_step_id in refs}
     total = 0
     missing: list[tuple[str, int, str]] = []
     unchecked: list[str] = []
     for f in fields:
         vals: list[tuple[int, str]] = []
-        for r in refs:
-            for label, value in _harvest(records.get(r) or ""):
+        for referenced_step_id in refs:
+            for label, value in _harvest(records.get(referenced_step_id) or ""):
                 if (_field_matches(f, label)
-                        and (r, value) not in vals):
-                    vals.append((r, value))
+                        and (referenced_step_id, value) not in vals):
+                    vals.append((referenced_step_id, value))
         if not vals:
             unchecked.append(f)
             continue
         total += len(vals)
-        for r, value in vals:
+        for referenced_step_id, value in vals:
             if _norm(value) not in content:
-                missing.append((f, r, value))
+                missing.append((f, referenced_step_id, value))
     note = (f"; field(s) {', '.join(unchecked)} never appear in the "
             f"source records — not checked" if unchecked else "")
     if total == 0:
@@ -479,15 +508,15 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
                            f"found in the records of step(s) {ref_list} "
                            f"— preservation not checked")
     if missing:
-        shown = "; ".join(f"{f} {v!r} (step {r})"
-                          for f, r, v in missing[:8])
+        shown = "; ".join(f"{f} {value!r} (step {referenced_step_id})"
+                          for f, referenced_step_id, value in missing[:8])
         if len(missing) > 8:
             shown += f"; and {len(missing) - 8} more"
         return CheckResult(then, False, "preserves",
-                           f"{rel!r} is missing values the source "
+                           f"{relative_path!r} is missing values the source "
                            f"steps read: {shown}{note}")
     return CheckResult(then, True, "preserves",
-                       f"{rel!r} preserves all {total} values of "
+                       f"{relative_path!r} preserves all {total} values of "
                        f"{', '.join(fields)} read in step(s) "
                        f"{ref_list}{note}")
 
@@ -509,55 +538,55 @@ def _v_preserves(m: re.Match, ctx: VerifyContext) -> CheckResult:
           rf"""^{_FILE}{_QPATH}\s+excludes?\s+"""
           rf"""(?:the\s+contents\s+of\s+{_QPATH}|{_QTEXT}|"""
           rf"""(.+?)\s+from\s+(.+?))\s*[.!]?\s*$""")
-def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    g = m.groups()
-    rel = _pick(*g[0:4])
-    contents_rel = _pick(*g[4:8])
-    literal = _pick(*g[8:11])
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "excludes", err)
-    if not p.is_file():
+def _v_excludes(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    groups = match.groups()
+    relative_path = _pick(*groups[0:4])
+    contents_relative_path = _pick(*groups[4:8])
+    literal = _pick(*groups[8:11])
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "excludes", error)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "excludes",
-                           f"{rel!r} is not a file — expected a "
+                           f"{relative_path!r} is not a file — expected a "
                            f"deliverable that excludes the named "
                            f"content")
-    content = _norm(p.read_text(errors="replace"))
+    content = _norm(resolved_path.read_text(errors="replace"))
     leaks: list[str] = []
     basis = ""
-    if contents_rel is not None:
-        sp, serr = _resolve(ctx, contents_rel)
+    if contents_relative_path is not None:
+        sp, serr = _resolve(verify_context, contents_relative_path)
         if serr or sp is None or not sp.is_file():
             return CheckResult(then, True, "excludes",
-                               f"source file {contents_rel!r} not "
+                               f"source file {contents_relative_path!r} not "
                                f"found — exclusion not checked")
         src = sp.read_text(errors="replace")
-        guarded = [v for _label, v in _harvest(src)]
+        guarded = [value for _label, value in _harvest(src)]
         for line in src.splitlines():
-            line = re.sub(r"\s+", " ", line.strip())
+            line = regular_expression.sub(r"\s+", " ", line.strip())
             if len(line) >= 12 and line not in guarded:
                 guarded.append(line)
-        leaks = [v for v in guarded if _norm(v) in content]
-        basis = f"content from {contents_rel!r}"
+        leaks = [value for value in guarded if _norm(value) in content]
+        basis = f"content from {contents_relative_path!r}"
         if not guarded:
             return CheckResult(then, True, "excludes",
-                               f"{contents_rel!r} holds nothing "
+                               f"{contents_relative_path!r} holds nothing "
                                f"checkable — exclusion not checked")
     elif literal is not None:
         if _norm(literal) in content:
             leaks = [literal]
         basis = f"the text {literal!r}"
     else:
-        fields = _parse_fields(g[11] or "")
-        refs = [r for r in _refs_in(g[12] or "") if r != ctx.step_id]
+        fields = _parse_fields(groups[11] or "")
+        refs = [referenced_step_id for referenced_step_id in _refs_in(groups[12] or "") if referenced_step_id != verify_context.step_id]
         if not fields or not refs:
             return CheckResult(then, True, "excludes",
                                "the clause names no fields or no "
                                "source steps — exclusion not checked")
         guarded = []
-        for r in refs:
-            for label, value in _harvest(_record_text(ctx, r) or ""):
+        for referenced_step_id in refs:
+            for label, value in _harvest(_record_text(verify_context, referenced_step_id) or ""):
                 if any(_field_matches(f, label) for f in fields) \
                         and value not in guarded:
                     guarded.append(value)
@@ -566,74 +595,74 @@ def _v_excludes(m: re.Match, ctx: VerifyContext) -> CheckResult:
                                f"no labeled values for "
                                f"{', '.join(fields)} found in the "
                                f"records of step(s) "
-                               f"{', '.join(str(r) for r in refs)} "
+                               f"{', '.join(str(referenced_step_id) for referenced_step_id in refs)} "
                                f"— exclusion not checked")
-        leaks = [v for v in guarded if _norm(v) in content]
+        leaks = [value for value in guarded if _norm(value) in content]
         basis = (f"{', '.join(fields)} from step(s) "
-                 f"{', '.join(str(r) for r in refs)}")
+                 f"{', '.join(str(referenced_step_id) for referenced_step_id in refs)}")
     if leaks:
-        shown = "; ".join(repr(v) for v in leaks[:8])
+        shown = "; ".join(repr(value) for value in leaks[:8])
         if len(leaks) > 8:
             shown += f"; and {len(leaks) - 8} more"
         return CheckResult(then, False, "excludes",
-                           f"{rel!r} must exclude {basis}, but it "
+                           f"{relative_path!r} must exclude {basis}, but it "
                            f"contains: {shown}")
     return CheckResult(then, True, "excludes",
-                       f"{rel!r} excludes {basis}")
+                       f"{relative_path!r} excludes {basis}")
 
 
 @verifier("contains",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}contains?\s+"""
           rf"""(?!exactly\b|the\s+exact\s+content\b){_QTEXT}\s*$""")
-def _v_contains(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    text = _pick(*m.groups()[4:7])
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "contains", err)
-    if not p.is_file():
+def _v_contains(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    relative_path = _pick(*match.groups()[0:4])
+    text = _pick(*match.groups()[4:7])
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "contains", error)
+    if not resolved_path.is_file():
         return CheckResult(then, False, "contains",
-                           f"{rel!r} is not a file — expected it to contain {text!r}")
-    if text in p.read_text():
-        return CheckResult(then, True, "contains", f"{rel!r} contains {text!r}")
+                           f"{relative_path!r} is not a file — expected it to contain {text!r}")
+    if text in resolved_path.read_text():
+        return CheckResult(then, True, "contains", f"{relative_path!r} contains {text!r}")
     return CheckResult(then, False, "contains",
-                       f"{rel!r} does not contain {text!r}")
+                       f"{relative_path!r} does not contain {text!r}")
 
 
 @verifier("not_exists",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}(?:does\s+)?not\s+exist\s*[.!]?\s*$""")
-def _v_not_exists(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "not_exists", err)
-    if not p.exists():
-        return CheckResult(then, True, "not_exists", f"{rel!r} does not exist")
+def _v_not_exists(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    relative_path = _pick(*match.groups()[0:4])
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "not_exists", error)
+    if not resolved_path.exists():
+        return CheckResult(then, True, "not_exists", f"{relative_path!r} does not exist")
     return CheckResult(then, False, "not_exists",
-                       f"{rel!r} exists — expected it not to")
+                       f"{relative_path!r} exists — expected it not to")
 
 
 @verifier("exists",
           rf"""^{_FILE}{_QPATH}\s+{_SHOULD}exists?\s*[.!]?\s*$""")
-def _v_exists(m: re.Match, ctx: VerifyContext) -> CheckResult:
-    rel = _pick(*m.groups()[0:4])
-    then = m.string.strip()
-    p, err = _resolve(ctx, rel)
-    if err:
-        return CheckResult(then, False, "exists", err)
-    if p.exists():
-        return CheckResult(then, True, "exists", f"{rel!r} exists")
+def _v_exists(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
+    relative_path = _pick(*match.groups()[0:4])
+    then = match.string.strip()
+    resolved_path, error = _resolve(verify_context, relative_path)
+    if error:
+        return CheckResult(then, False, "exists", error)
+    if resolved_path.exists():
+        return CheckResult(then, True, "exists", f"{relative_path!r} exists")
     return CheckResult(then, False, "exists",
-                       f"{rel!r} MISSING — expected it to exist")
+                       f"{relative_path!r} MISSING — expected it to exist")
 
 
 def match_verifier(then: str) -> str | None:
     """Name of the verifier handling this Then, or None (attestation fallback).
     Used for the approval badge; matching never touches the workspace."""
-    p = parse_then(then)
-    return p[0] if p else None
+    parsed = parse_then(then)
+    return parsed[0] if parsed else None
 
 
 def parse_then(then: str) -> tuple[str, str | None, str | None] | None:
@@ -645,17 +674,54 @@ def parse_then(then: str) -> tuple[str, str | None, str | None] | None:
     touches the workspace. Used by the plan lint and the approval badges.
     """
     then = (then or "").strip()
-    for v in VERIFIERS:
-        m = v.pattern.match(then)
-        if m:
-            g = m.groups()
-            path = _pick(*g[0:4])
-            value = _pick(*g[4:7]) if v.name in ("contains", "contains_exactly") else None
-            return v.name, path, value
+    for verifier in VERIFIERS:
+        match = verifier.pattern.match(then)
+        if match:
+            groups = match.groups()
+            path = _pick(*groups[0:4])
+            value = _pick(*groups[4:7]) if verifier.name in ("contains", "contains_exactly") else None
+            return verifier.name, path, value
     return None
 
 
-def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
+def _excluded_files_for(steps, current_step_id) -> dict[str, set[str]]:
+    """Per-deliverable excluded filenames from contents-of excludes clauses.
+
+    Scans Then clauses on steps with id <= current_step_id: same
+    deliverable only, current or earlier steps only. Only the
+    contents-of form yields a filename to subtract (its source,
+    quoted or bare path-shaped). Literal and fields forms yield no
+    filename, and a clause that does not parse (prose target or
+    prose contents source) yields none and attests as before.
+    Steps are duck-typed (any object with .id and .done_when, the
+    newline-separated Then bodies), so this stays importable
+    without planner, which imports verify.
+    """
+    excluded: dict[str, set[str]] = {}
+    excludes = next((verifier for verifier in VERIFIERS if verifier.name == "excludes"), None)
+    if excludes is None:
+        return excluded
+    for step in steps or []:
+        if step.id > current_step_id:
+            continue
+        for clause in (step.done_when or "").split("\n"):
+            clause = clause.strip()
+            if not clause:
+                continue
+            parsed = parse_then(clause)
+            if parsed is None or parsed[0] != "excludes":
+                continue
+            match = excludes.pattern.match(clause)
+            if match is None:
+                continue
+            contents_relative_path = _pick(*match.groups()[4:8])
+            if parsed[1] is None or contents_relative_path is None:
+                continue
+            excluded.setdefault(parsed[1], set()).add(contents_relative_path)
+    return excluded
+
+
+def verify_step(thens: list[str], verify_context: VerifyContext) -> StepVerify:
     """Evaluate each Then clause. Unmatched phrasings fall back to attestation
     (ok=True) — the harness only fails what it can actually check."""
     checks: list[CheckResult] = []
@@ -664,18 +730,18 @@ def verify_step(thens: list[str], ctx: VerifyContext) -> StepVerify:
         if not then:
             continue
         result = None
-        for v in VERIFIERS:
-            m = v.pattern.match(then)
-            if m:
-                result = v.check(m, ctx)
+        for verifier in VERIFIERS:
+            match = verifier.pattern.match(then)
+            if match:
+                result = verifier.check(match, verify_context)
                 break
         if result is None:
-            result = _attest_or_floor(then, ctx)
+            result = _attest_or_floor(then, verify_context)
         checks.append(result)
     return StepVerify(ok=all(c.ok for c in checks), checks=checks)
 
 
-_QUOTED = re.compile(r'''"([^"]*)"|'([^']*)'|`([^`]*)`''')
+_QUOTED = regular_expression.compile(r'''"([^"]*)"|'([^']*)'|`([^`]*)`''')
 # A saved plan's covers clause: the verb is retired, so the clause
 # is never checked as covers, but it still names its deliverable.
 # This is the retired verifier's target grammar, kept so the
@@ -683,18 +749,18 @@ _QUOTED = re.compile(r'''"([^"]*)"|'([^']*)'|`([^`]*)`''')
 # every written form, including the bare and contents-of forms that
 # contain no quoted span. (graphcheck keeps its own copy for the
 # approval graph.)
-_COVERS_CLAUSE = re.compile(
+_COVERS_CLAUSE = regular_expression.compile(
     r"^\s*(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?"
     r"(?:the\s+file\s+)?"
     r"(?:\"([^\"]*)\"|'([^']*)'|`([^`]*)`|([\w./\\-]+))"
     r"\s+covers?\s+the\s+files\s+"
     r"(?:from|listed\s+(?:in|by))\s+step\s+\d+\s*[.!]?\s*$",
-    re.IGNORECASE)
+    regular_expression.IGNORECASE)
 # Absence intent: the clause wants the named file NOT there, so a
 # missing file is the success state, never a floor failure.
-_ABSENCE_INTENT = re.compile(
+_ABSENCE_INTENT = regular_expression.compile(
     r"not\s+exist|should\s+not|does\s+not|n't\s+exist|no\s+longer|"
-    r"\babsent\b|\bremoved\b|\bdeleted\b", re.IGNORECASE)
+    r"\babsent\b|\bremoved\b|\bdeleted\b", regular_expression.IGNORECASE)
 
 
 def _legacy_covers_target(then: str) -> str | None:
@@ -726,16 +792,16 @@ def _named_file(then: str) -> str | None:
                 if alternative is not None).strip()
     if not name or any(c.isspace() for c in name):
         return None
-    if "/" in name or re.search(r"\.[\w-]+$", name):
+    if "/" in name or regular_expression.search(r"\.[\w-]+$", name):
         return name
     return None
 
 
-_LEADING_QUOTED = re.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
-                             re.IGNORECASE)
+_LEADING_QUOTED = regular_expression.compile(r"""^\s*(?:the\s+file\s+)?["'`]""",
+                             regular_expression.IGNORECASE)
 
 
-_ABSENCE_PREDICATE = re.compile(
+_ABSENCE_PREDICATE = regular_expression.compile(
     r"""(?:does|do)\s+not\s+exist\b"""
     r"""|doesn't\s+exist\b"""
     r"""|(?:should|shall)\s+not\s+exist\b"""
@@ -744,7 +810,7 @@ _ABSENCE_PREDICATE = re.compile(
     r"""|(?:is|was)\s+no\s+longer\s+(?:there|present|available)\b"""
     r"""|(?:has|have|had)\s+been\s+(?:removed|deleted)\b"""
     r"""|(?:was|were|is|are)\s+(?:removed|deleted)\b""",
-    re.IGNORECASE)
+    regular_expression.IGNORECASE)
 
 
 def absence_intent(clause: str) -> bool:
@@ -775,12 +841,12 @@ def absence_intent(clause: str) -> bool:
     return bool(_ABSENCE_PREDICATE.match(remainder))
 
 
-_LEADING_SUBJECT = re.compile(
+_LEADING_SUBJECT = regular_expression.compile(
     r"""^\s*(?:the\s+file\s+)?""" + _QTEXT,
-    re.IGNORECASE)
+    regular_expression.IGNORECASE)
 
 
-_PRESERVATION_PREDICATE = re.compile(
+_PRESERVATION_PREDICATE = regular_expression.compile(
     r"(?:remains?|stays?)\s+(?:unchanged|unmodified|untouched|"
     r"as\s+it\s+was|the\s+same)\b"
     r"|(?:is|was)\s+(?:unchanged|unmodified|untouched)\b"
@@ -789,7 +855,7 @@ _PRESERVATION_PREDICATE = re.compile(
     r"as\s+it\s+was)\b"
     r"|(?:has|have)\s+not\s+been\s+(?:modified|changed)\b"
     r"|(?:does|do)\s+not\s+change\b",
-    re.IGNORECASE)
+    regular_expression.IGNORECASE)
 
 
 def preservation_intent(clause: str) -> bool:
@@ -837,7 +903,7 @@ def then_subject_file(clause: str) -> str | None:
     return _named_file(clause)
 
 
-def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
+def _attest_or_floor(then: str, verify_context: VerifyContext) -> CheckResult:
     """The attestation fallback, with the issue #22 existence floor.
 
     Field failure (Daniel Okafor, 2026-10-04): a prose contains
@@ -855,8 +921,8 @@ def _attest_or_floor(then: str, ctx: VerifyContext) -> CheckResult:
     named_file = _named_file(then)
     if named_file and (_legacy_covers_target(then) is not None
                        or not _ABSENCE_INTENT.search(then)):
-        path, err = _resolve(ctx, named_file)
-        if not err and path is not None and not path.exists():
+        path, error = _resolve(verify_context, named_file)
+        if not error and path is not None and not path.exists():
             return CheckResult(
                 then, False, "attest",
                 f"named file {named_file!r} does not exist — a clause "
@@ -901,20 +967,20 @@ def promised_deliverables(steps) -> list[str]:
                 excluded.add(named_file)
             elif named_file not in promised:
                 promised.append(named_file)
-    return sorted(p for p in promised if p not in excluded)
+    return sorted(relative_path for relative_path in promised if relative_path not in excluded)
 
 
 def missing_deliverables(steps, jail: Jail) -> list[str]:
     """Promised deliverables that do not exist in the workspace.
     Paths escaping the jail cannot be judged and are skipped."""
     missing: list[str] = []
-    for rel in promised_deliverables(steps):
+    for relative_path in promised_deliverables(steps):
         try:
-            p = jail.resolve(rel)
+            resolved_path = jail.resolve(relative_path)
         except Refusal:
             continue
-        if not p.exists():
-            missing.append(rel)
+        if not resolved_path.exists():
+            missing.append(relative_path)
     return missing
 
 

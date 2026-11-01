@@ -25,8 +25,10 @@ def _sub_step_names_prior(sub_step, prior_output_paths: list[str]) -> bool:
 
 
 def _find_prior_read_index(sub_steps, prior_output_paths: list[str]) -> int | None:
-    return next((step_index for step_index, sub_step in enumerate(sub_steps)
-                 if _sub_step_names_prior(sub_step, prior_output_paths)), None)
+    for step_index, sub_step in enumerate(sub_steps):
+        if _sub_step_names_prior(sub_step, prior_output_paths):
+            return step_index
+    return None
 
 
 def _unreferenced_priors_feedback(step: PlanStep, prior_output_paths: list[str]) -> str:
@@ -70,8 +72,7 @@ def _collect_covers_targets_and_items(step: PlanStep, steps: list[PlanStep]) -> 
     covered_items: list[str] = []
     target_names: list[str] = []
     for then_clause in (step.done_when or "").split("\n"):
-        _accumulate_covers_clause(then_clause, steps_by_id,
-                                  target_names, covered_items)
+        _accumulate_covers_clause(then_clause, steps_by_id, target_names, covered_items)
     return target_names, covered_items
 
 
@@ -135,9 +136,9 @@ def _unchanged_after_read_feedback(step: PlanStep, prior_output_paths: list[str]
             f"read.")
 
 
-def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
-    """Build the DONE gate for one step (v0.8.1), or None when the step has
-    no completed prior steps with stored outputs.
+class _GroundingGate:
+    """The DONE gate for one step (v0.8.1): called with the sub-run's
+    steps, it returns pushback feedback, or None to accept the DONE.
 
     Field failure behind it: a step wrote its deliverable without ever
     reading the previous step's stored output, and produced a placeholder.
@@ -168,37 +169,53 @@ def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
     sub-run (the loop cap is unchanged) and is evaluated before stage 2,
     because "read these files" is the more specific instruction when
     both apply."""
-    prior_output_paths = [prior_step.output_path for prior_step in steps
-                          if prior_step.id < step.id and prior_step.status == "done" and prior_step.output_path]
-    if not prior_output_paths:
-        return None
 
-    def gate(sub_steps) -> str | None:
-        read_index = _find_prior_read_index(sub_steps, prior_output_paths)
+    def __init__(self, step: PlanStep, steps: list[PlanStep],
+                 prior_output_paths: list[str], verify_now=None):
+        self.step = step
+        self.steps = steps
+        self.prior_output_paths = prior_output_paths
+        self.verify_now = verify_now
+
+    def __call__(self, sub_steps) -> str | None:
+        read_index = _find_prior_read_index(sub_steps, self.prior_output_paths)
         if read_index is None:
-            return _unreferenced_priors_feedback(step, prior_output_paths)
-
-        coverage_feedback = _gate_missing_coverage(step, steps, sub_steps)
+            return _unreferenced_priors_feedback(self.step, self.prior_output_paths)
+        coverage_feedback = _gate_missing_coverage(self.step, self.steps, sub_steps)
         if coverage_feedback is not None:
             return coverage_feedback
-
-        if _has_work_after_prior_read(sub_steps, read_index, prior_output_paths):
+        if _has_work_after_prior_read(sub_steps, read_index, self.prior_output_paths):
             return None
+        if self._verified_now():
+            return None
+        return _unchanged_after_read_feedback(self.step, self.prior_output_paths)
 
-        if verify_now is not None:
-            try:
-                if verify_now():
-                    return None
-            except Exception:
-                # Issue #62: a raising verifier keeps the pushback
-                # feedback (the old silent pass did the same), but the
-                # failure is now logged instead of swallowed silently.
-                logger.warning("verify_now raised in grounding gate; "
-                               "keeping pushback feedback", exc_info=True)
+    def _verified_now(self) -> bool:
+        """Whether verify_now answers stage 2's suspicion. Issue #62:
+        a raising verifier keeps the pushback feedback (the old silent
+        pass did the same), but the failure is logged instead of
+        swallowed silently."""
+        if self.verify_now is None:
+            return False
+        try:
+            return bool(self.verify_now())
+        except Exception:
+            logger.warning("verify_now raised in grounding gate; keeping pushback feedback", exc_info=True)
+            return False
 
-        return _unchanged_after_read_feedback(step, prior_output_paths)
 
-    return gate
+def _prior_output_paths(step: PlanStep, steps: list[PlanStep]) -> list[str]:
+    return [prior_step.output_path for prior_step in steps
+            if prior_step.id < step.id and prior_step.status == "done" and prior_step.output_path]
+
+
+def _grounding_gate(step: PlanStep, steps: list[PlanStep], verify_now=None):
+    """Build the DONE gate for one step (see _GroundingGate), or None
+    when the step has no completed prior steps with stored outputs."""
+    prior_output_paths = _prior_output_paths(step, steps)
+    if not prior_output_paths:
+        return None
+    return _GroundingGate(step, steps, prior_output_paths, verify_now)
 
 
 def _constrained_subjects(clauses: list[str]) -> set[str]:
@@ -208,13 +225,11 @@ def _constrained_subjects(clauses: list[str]) -> set[str]:
     across the whole step first, so an existence clause naming the
     same file cannot resurrect it as a write target."""
     from . import verify as _verify
-    constrained: set[str] = set()
-    for clause in clauses:
-        if _verify.absence_intent(clause) or _verify.preservation_intent(clause):
-            subject_file = _verify.then_subject_file(clause)
-            if subject_file:
-                constrained.add(subject_file)
-    return constrained
+    def is_constraint(clause: str) -> bool:
+        return _verify.absence_intent(clause) or _verify.preservation_intent(clause)
+
+    subject_files = {_verify.then_subject_file(clause) for clause in clauses if is_constraint(clause)}
+    return {subject_file for subject_file in subject_files if subject_file}
 
 
 def _then_named_outputs(step: PlanStep) -> list[str]:

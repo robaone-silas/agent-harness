@@ -32,10 +32,9 @@ def _collect_attempt_args(attempts: list[dict], step: PlanStep) -> None:
     """Dump every attempted sub-step's tool-call args onto the step,
     for the read-coverage audit (issue #17)."""
     import json as _json
-    for attempt in attempts:
-        for sub_step in attempt.get("sub_steps") or []:
-            if sub_step.tool and sub_step.args:
-                step.touched_args.add(_json.dumps(sub_step.args, default=str))
+    attempted_sub_steps = [sub_step for attempt in attempts for sub_step in attempt.get("sub_steps") or []]
+    called_sub_steps = [sub_step for sub_step in attempted_sub_steps if sub_step.tool and sub_step.args]
+    step.touched_args |= {_json.dumps(sub_step.args, default=str) for sub_step in called_sub_steps}
 
 
 def _last_attempt_tool_summary(last_sub_steps: list) -> str | None:
@@ -65,18 +64,18 @@ def _record_attempt_metrics(step: PlanStep, attempts: list[dict]):
 def _write_step_to_store(run_store, step: PlanStep, attempts: list[dict], status: str):
     if run_store is None:
         return
+    step_record = dict(
+        step_id=step.id, instruction=step.instruction,
+        given=step.given, done_when=step.done_when,
+        answer=step.result, sub_steps=[], status=status,
+        verify_checks=step.verify, verify_waived=step.verify_waived,
+        attempts=attempts or None)
     try:
-        run_store.write_step(
-            step_id=step.id, instruction=step.instruction,
-            given=step.given, done_when=step.done_when,
-            answer=step.result, sub_steps=[], status=status,
-            verify_checks=step.verify, verify_waived=step.verify_waived,
-            attempts=attempts or None)
+        run_store.write_step(**step_record)
     except Exception:
         # Issue #62: persisting the step record is best-effort, so a
         # failing store still must not fail the run (the old silent
         # pass did the same), but the failure is now logged instead
         # of swallowed silently.
-        logger.warning("run store write failed; step record dropped",
-                       exc_info=True)
+        logger.warning("run store write failed; step record dropped", exc_info=True)
 

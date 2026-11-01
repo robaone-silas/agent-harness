@@ -70,7 +70,7 @@ def _add_step_token(step_references: set[int], step_number: int,
     one is pending (a list member the loop has not flushed yet).
     """
     if previous_step_number is not None and connector in _RANGE_CONNECTORS:
-        step_references.update(_expand_step_range(previous_step_number, step_number))
+        step_references |= _expand_step_range(previous_step_number, step_number)
         return
     step_references.add(step_number)
     if previous_step_number is not None:
@@ -86,8 +86,7 @@ def _parse_step_segment_tokens(tokens: list[str]) -> set[int]:
             connector = token.lower()
             continue
         step_number = int(token)
-        _add_step_token(step_references, step_number,
-                        previous_step_number, connector)
+        _add_step_token(step_references, step_number, previous_step_number, connector)
         previous_step_number, connector = step_number, None
     if previous_step_number is not None:
         step_references.add(previous_step_number)
@@ -106,7 +105,7 @@ def _step_refs_from_segments(text: str) -> set[int]:
     segment_references: set[int] = set()
     for segment_match in _STEP_SEGMENT_PATTERN.finditer(text):
         tokens = _STEP_TOKEN_PATTERN.findall(segment_match.group(1))
-        segment_references.update(_parse_step_segment_tokens(tokens))
+        segment_references |= _parse_step_segment_tokens(tokens)
     return segment_references
 
 
@@ -123,9 +122,8 @@ def _step_refs(text: str) -> set[int]:
     in it, a list counts each member: a referenced prior step is
     read once however it was named.
     """
-    step_references = {int(matched_step) for matched_step in _STEP_SINGULAR_PATTERN.findall(text)}
-    step_references.update(_step_refs_from_segments(text))
-    return step_references
+    singular_references = {int(matched_step) for matched_step in _STEP_SINGULAR_PATTERN.findall(text)}
+    return singular_references | _step_refs_from_segments(text)
 
 
 def _step_quoted_operands(text: str) -> set[str]:
@@ -137,17 +135,18 @@ def _prior_step_cost(prior_step: PlanStep) -> int:
     return 1 + len(prior_step.source_items or [])
 
 
+def _prior_steps_cost(step: PlanStep, steps: list[PlanStep], step_text: str) -> int:
+    """Turns spent reading the earlier steps the text draws on."""
+    steps_by_id = {plan_step.id: plan_step for plan_step in steps}
+    referenced_steps = (steps_by_id.get(step_reference) for step_reference in _step_refs(step_text))
+    return sum(_prior_step_cost(prior_step) for prior_step in referenced_steps
+               if prior_step is not None and prior_step.id < step.id)
+
+
 def step_budget(step: PlanStep, steps: list[PlanStep], config=None) -> int:
     """Effective turn budget for one plan step, from its planned work."""
     base_budget = getattr(config, "step_max_steps", 6) if config is not None else 6
-    ceiling_budget = (getattr(config, "step_budget_ceiling", 24)
-               if config is not None else 24)
-    step_text = "\n".join([step.given or "", step.intent or "",
-                           step.instruction or "", step.done_when or ""])
-    operations_count = len(_step_quoted_operands(step_text))
-    steps_by_id = {plan_step.id: plan_step for plan_step in steps}
-    for step_reference in _step_refs(step_text):
-        prior_step = steps_by_id.get(step_reference)
-        if prior_step is not None and prior_step.id < step.id:
-            operations_count += _prior_step_cost(prior_step)
+    ceiling_budget = getattr(config, "step_budget_ceiling", 24) if config is not None else 24
+    step_text = "\n".join([step.given or "", step.intent or "", step.instruction or "", step.done_when or ""])
+    operations_count = len(_step_quoted_operands(step_text)) + _prior_steps_cost(step, steps, step_text)
     return max(base_budget, min(ceiling_budget, operations_count + _BUDGET_SLACK))

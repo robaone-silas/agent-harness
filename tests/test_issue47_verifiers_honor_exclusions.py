@@ -236,13 +236,11 @@ def t_prose_target_subtracts_nothing():
 
 def t_bare_path_source_subtracts():
     """A bare path-shaped contents source parses and subtracts."""
-    bare = planner.PlanStep(
-        id=2, instruction="compile",
-        done_when='"business-inventory.txt" excludes the contents of '
-                  'school-form.txt')
+    clause = '"business-inventory.txt" excludes the contents of school-form.txt'
+    bare = planner.PlanStep(id=2, instruction="compile", done_when=clause)
+    expected = {"business-inventory.txt": {"school-form.txt"}}
     check("bare path-shaped contents source parses and subtracts",
-          verify._excluded_files_for([bare], 2)
-          == {"business-inventory.txt": {"school-form.txt"}})
+          verify._excluded_files_for([bare], 2) == expected)
 
 
 ACCOUNTS_FOR = '"business-inventory.txt" accounts for the files from step 1'

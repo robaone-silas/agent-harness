@@ -58,11 +58,16 @@ def _lines_from_sub_step(sub_step) -> list[str] | None:
     if sub_step.tool in ("list_dir", "grep_files"):
         return sub_step.result.splitlines()
     if sub_step.tool == "exec":
-        cmd = str((sub_step.args or {}).get("command", ""))
-        if regular_expression.match(r"\s*(ls|find)\b", cmd):
-            return [line for line in sub_step.result.splitlines()
-                    if not line.startswith("exit=")]
+        return _exec_listing_lines(sub_step)
     return None
+
+
+def _exec_listing_lines(sub_step) -> list[str] | None:
+    """Output lines of an ls or find exec, exit-status lines stripped."""
+    command = str((sub_step.args or {}).get("command", ""))
+    if not regular_expression.match(r"\s*(ls|find)\b", command):
+        return None
+    return [line for line in sub_step.result.splitlines() if not line.startswith("exit=")]
 
 
 def _append_item_names(lines: list[str], items: list[str]) -> None:
@@ -111,6 +116,31 @@ _PRES_TOKEN = regular_expression.compile(r"\d+|through|to|and|,|[-–—]", regu
 _PRES_RANGE_SEPS = {"through", "to", "-", "–", "—"}
 
 
+def _numbers_and_gaps(segment_text: str) -> tuple[list[int], list[str]]:
+    """The segment's numbers, and for each gap between consecutive
+    numbers the last separator spoken in it ("" when none)."""
+    numbers: list[int] = []
+    gaps: list[str] = []
+    pending: list[str] = []
+    for token in _PRES_TOKEN.findall(segment_text):
+        if not token.isdigit():
+            pending.append(token)
+            continue
+        if numbers:
+            gaps.append(pending[-1].strip().lower() if pending else "")
+        numbers.append(int(token))
+        pending = []
+    return numbers, gaps
+
+
+def _range_span(first: int, second: int) -> list[int] | None:
+    """Every step from first to second, or None when the span is
+    empty or implausibly wide (over 64 steps)."""
+    if not 0 < abs(second - first) <= 64:
+        return None
+    return list(range(min(first, second), max(first, second) + 1))
+
+
 def _refs_from_segment(segment_text: str) -> list[int]:
     """Step numbers one plural segment names, ranges expanded.
 
@@ -119,60 +149,46 @@ def _refs_from_segment(segment_text: str) -> list[int]:
     (", and") cannot shift the pairing between numbers and
     connectors. The token walk in plan_model._step_refs pairs them the
     same way."""
-    numbers: list[int] = []
-    gaps: list[str] = []
-    pending: list[str] = []
-    for token in _PRES_TOKEN.findall(segment_text):
-        if token.isdigit():
-            if numbers:
-                gaps.append(pending[-1].strip().lower()
-                            if pending else "")
-            numbers.append(int(token))
-            pending = []
-        else:
-            pending.append(token)
+    numbers, gaps = _numbers_and_gaps(segment_text)
     refs: list[int] = []
     for index, number in enumerate(numbers):
-        if (index + 1 < len(numbers) and gaps[index] in _PRES_RANGE_SEPS):
-            first, second = number, numbers[index + 1]
-            if 0 < abs(second - first) <= 64:
-                refs.extend(range(min(first, second), max(first, second) + 1))
-                continue
-        refs.append(number)
+        span = None
+        if index + 1 < len(numbers) and gaps[index] in _PRES_RANGE_SEPS:
+            span = _range_span(number, numbers[index + 1])
+        refs.extend(span if span is not None else [number])
     return refs
 
 
+_SINGULAR_STEP_REF = regular_expression.compile(r"\bstep\s+(\d+)", regular_expression.IGNORECASE)
+
+
 def _refs_in(text: str) -> list[int]:
-    refs = [int(step_number_string) for step_number_string in regular_expression.findall(r"\bstep\s+(\d+)", text or "",
-                                       regular_expression.IGNORECASE)]
+    refs = [int(step_number) for step_number in _SINGULAR_STEP_REF.findall(text or "")]
     for match in _PRES_SEG.finditer(text or ""):
         refs.extend(_refs_from_segment(match.group(1)))
-    seen: set[int] = set()
-    out: list[int] = []
-    for referenced_step_id in refs:
-        if referenced_step_id not in seen:
-            seen.add(referenced_step_id)
-            out.append(referenced_step_id)
-    return out
+    return list(dict.fromkeys(refs))
+
+
+def _singular(word: str) -> str:
+    """The word without a plural trailing s; words ending in ss, us,
+    or is keep theirs, so 'status' stays intact."""
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
 
 
 def _field_key(phrase: str) -> str:
-    """Comparison key for a field phrase: the last word singularized
-    (a trailing s, unless the word ends in ss, us, or is, which keeps
-    'status' intact), so a clause naming 'prices' guards records
-    labeled 'Price'."""
+    """Comparison key for a field phrase: the last word singularized,
+    so a clause naming 'prices' guards records labeled 'Price'."""
     words = (phrase or "").split()
     if words:
-        w = words[-1]
-        if (len(w) > 3 and w.endswith("s")
-                and not w.endswith(("ss", "us", "is"))):
-            words[-1] = w[:-1]
+        words[-1] = _singular(words[-1])
     return " ".join(words)
 
 
 def _field_matches(field: str, label: str) -> bool:
-    field_name, l = _field_key(field), _field_key(label)
-    return l == field_name or l.startswith(field_name + " ")
+    field_key, label_key = _field_key(field), _field_key(label)
+    return label_key == field_key or label_key.startswith(field_key + " ")
 
 
 def _parse_fields(text: str) -> list[str]:

@@ -109,16 +109,11 @@ def _release_logs(logger, handler, old_propagate):
 
 
 def _gate_with_prior_read(verify_now):
-    prior = PlanStep(id=1, instruction="gather", done_when="",
-                     status="done",
-                     output_path=".harness/runs/x/step-01.md")
-    step = PlanStep(id=2, instruction="compile", done_when="",
-                    output_path=".harness/runs/x/step-02.md")
-    gate = planner._grounding_gate(step, [prior, step],
-                                   verify_now=verify_now)
-    read_sub_step = SimpleNamespace(
-        tool="read_file",
-        args={"path": ".harness/runs/x/step-01.md"})
+    prior_output = ".harness/runs/x/step-01.md"
+    prior = PlanStep(id=1, instruction="gather", done_when="", status="done", output_path=prior_output)
+    step = PlanStep(id=2, instruction="compile", done_when="", output_path=".harness/runs/x/step-02.md")
+    gate = planner._grounding_gate(step, [prior, step], verify_now=verify_now)
+    read_sub_step = SimpleNamespace(tool="read_file", args={"path": prior_output})
     return gate, [read_sub_step]
 
 

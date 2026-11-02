@@ -21,12 +21,46 @@ jobs:
           python-version: "3.12"
       - name: Check code version is greater than the current release
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
         run: |
           python - <<'PYEOF'
+          import os
           import re
           import subprocess
           import sys
+
+          def changed_filenames():
+              repo = os.environ.get("GITHUB_REPOSITORY", "")
+              event = os.environ.get("GITHUB_EVENT_NAME", "")
+              if event == "pull_request":
+                  number = os.environ.get("PR_NUMBER", "")
+                  if not number:
+                      return None
+                  args = ["gh", "api", f"repos/{repo}/pulls/{number}/files",
+                          "--paginate", "--jq", ".[].filename"]
+              elif event == "push":
+                  before = os.environ.get("PUSH_BEFORE", "")
+                  sha = os.environ.get("HEAD_SHA", "")
+                  if not before or before == "0" * 40 or not sha:
+                      return None
+                  args = ["gh", "api", f"repos/{repo}/compare/{before}...{sha}",
+                          "--jq", ".files[].filename"]
+              else:
+                  return None
+              result = subprocess.run(args, capture_output=True, text=True)
+              if result.returncode != 0:
+                  print(f"Could not list changed files; falling back to the strict check: {result.stderr.strip()}")
+                  return None
+              return [line for line in result.stdout.splitlines() if line]
+
+          filenames = changed_filenames()
+          if filenames is not None and not any(name.startswith("harness/") for name in filenames):
+              print("OK: no files under harness/ changed, so the shipped code is unchanged; version check skipped.")
+              sys.exit(0)
 
           with open("harness/__init__.py", encoding="utf-8") as f:
               text = f.read()

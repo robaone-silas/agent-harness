@@ -56,6 +56,47 @@ def _extract_fallback(content: str) -> tuple[str, dict | None]:
     return thought, {"name": data["name"], "arguments": data.get("arguments", {})}
 
 
+def _repeat_answer(call_key, last_call_key, last_outcome, last_success_key):
+    """Answer a repeated tool call without running the tool again.
+
+    Returns (tool_result, outcome, counts_as_error), or None when the
+    call is fresh and should run. A repeat of a just-succeeded call
+    guides the model to DONE; any other repeat breaks the loop. A
+    repeat of a call that once succeeded never counts as an error,
+    because the tool never ran again; a repeat of a failed call
+    still counts, because that loop is failing work.
+    """
+    if call_key != last_call_key:
+        return None
+    if last_outcome == "ok":
+        return prompts.REPEAT_SUCCESS_NUDGE, "nudged", False
+    return (f"ERROR: {prompts.LOOP_BREAKER}", "error",
+            call_key != last_success_key)
+
+
+def _run_tool_once(tool_def, tool_name, args, refusal_hint):
+    """Run one fresh tool call, translating failures into result text.
+
+    Returns (tool_result, outcome) with outcome "ok", "refused", or
+    "error". A refusal is a safety boundary, not a failure of the
+    work, but it still ends the call with an error-shaped result.
+    A crashing tool never crashes the loop.
+    """
+    try:
+        return tool_def["func"](args), "ok"
+    except _tools.Refusal as e:
+        tool_result = f"ERROR: {e}"
+        if refusal_hint and tool_name in (
+                "write_file", "append_file", "edit_file"):
+            tool_result += f"\n{refusal_hint}"
+        return tool_result, "refused"
+    except _tools.ToolError as e:
+        return f"ERROR: {e}", "error"
+    except Exception as e:  # never let a tool crash the loop
+        return (f"ERROR: tool crashed: {type(e).__name__}: {e}"[:500],
+                "error")
+
+
 def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
         only_tools=None, refusal_hint=None) -> RunResult:
     """Run the agent loop. chat_fn(messages, tools) -> assistant message dict;
@@ -98,6 +139,10 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
     result = RunResult(status="done", answer="")
     errors = 0
     last_call_key: tuple | None = None  # (tool_name, canonical args) of previous step
+    # The last call that actually ran and succeeded. A repeat of it never
+    # runs the tool again, so it is supervision, not a tool error, and it
+    # must not consume the consecutive-error budget (issue 49).
+    last_success_key: tuple | None = None
     # What the previous tool interaction was: None (no calls yet), "ok",
     # "error", or "nudged" (repeat-after-success nudge, which asks for DONE:).
     last_outcome: str | None = None
@@ -198,41 +243,23 @@ def run(task: str, cfg, chat_fn=None, on_step=None, done_gate=None,
                 last_outcome = "error"
             else:
                 call_key = (tool_name, json.dumps(args, sort_keys=True, default=str))
-                if call_key == last_call_key and last_outcome == "ok":
-                    # Repeating a success: the model means "done" but can't
-                    # say it. Guide it to DONE: instead of erroring.
-                    tool_result = prompts.REPEAT_SUCCESS_NUDGE
-                    last_outcome = "nudged"  # further repeats are errors
-                elif call_key == last_call_key:
-                    tool_result = f"ERROR: {prompts.LOOP_BREAKER}"
-                    errors += 1
-                    last_outcome = "error"
+                repeat = _repeat_answer(call_key, last_call_key,
+                                        last_outcome, last_success_key)
+                if repeat is not None:
+                    tool_result, last_outcome, counts_as_error = repeat
+                    if counts_as_error:
+                        errors += 1
                 else:
                     last_call_key = call_key
-                    try:
-                        tool_result = tool_def["func"](args)
-                    except _tools.Refusal as e:
-                        # Safety boundary, not a failure: the model is right
-                        # to stop, so DONE: afterwards is accepted.
-                        tool_result = f"ERROR: {e}"
-                        if refusal_hint and tool_name in (
-                                "write_file", "append_file", "edit_file"):
-                            tool_result += f"\n{refusal_hint}"
-                        errors += 1
-                        last_outcome = "refused"
-                    except _tools.ToolError as e:
-                        tool_result = f"ERROR: {e}"
-                        errors += 1
-                        last_outcome = "error"
-                    except Exception as e:  # never let a tool crash the loop
-                        tool_result = f"ERROR: tool crashed: {type(e).__name__}: {e}"[:500]
-                        errors += 1
-                        last_outcome = "error"
-                    else:
-                        last_outcome = "ok"
+                    tool_result, last_outcome = _run_tool_once(
+                        tool_def, tool_name, args, refusal_hint)
+                    if last_outcome == "ok":
+                        last_success_key = call_key
                         errors = 0
                         succeeded = True
                         error_pushback_sent = False
+                    else:
+                        errors += 1
 
         if path == "native":
             result.native_calls += 1

@@ -41,7 +41,10 @@ whether the model's native function calling is actually engaging.
   surfaces and parallel calls. `exec`, `read_file`, `write_file`,
   `append_file`, `edit_file`, `list_dir` — plus `grep_files`, which moves the
   list-and-scan loop into code so the model never handles filenames it
-  hasn't seen (it can't hallucinate what it can't invent).
+  hasn't seen (it can't hallucinate what it can't invent), and `run_code`,
+  which moves a computation into code so the model never has to answer it
+  in prose: the harness runs the Python it supplies and, when asked, writes
+  the exact stdout to a file the verifier can check.
 - **Native tool calling first, text fallback second.** The harness sends
   Ollama-native `tools`; if the model instead emits a
   ` ```toolcall {"name": ..., "arguments": {...}} ``` ` block, the harness
@@ -95,7 +98,7 @@ harness/
   loop.py              Agent loop: native-first, fallback-second
 tests/test_loop.py     19 assertions, scripted fake model, no Ollama needed
 eval/
-  run_eval.py          5 checkable micro-tasks against a real model
+  run_eval.py          6 checkable micro-tasks against a real model
   tasks.md             What each task measures
 ```
 

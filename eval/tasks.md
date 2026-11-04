@@ -1,6 +1,6 @@
 # Micro-eval tasks
 
-Five tasks, ordered by how many distinct capabilities they need. Each runs in a
+Six tasks, ordered by how many distinct capabilities they need. Each runs in a
 fresh sandbox and is graded by a programmatic checker on disk — no vibes-based
 grading. Run with `python3 eval/run_eval.py --model gemma4:e2b`.
 
@@ -11,6 +11,7 @@ grading. Run with `python3 eval/run_eval.py --model gemma4:e2b`.
 | 3 | search | scan files, identify match, write filename |
 | 4 | fix-bug | read code, diagnose, edit, verify by running |
 | 5 | multi-step | mkdir, write, execute, capture output to file |
+| 6 | count-with-code | compute a count with run_code, write just the number |
 
 **How to read the results:** the per-task line reports `native=` vs `fallback=`
 tool calls. If `native` is 0 across tasks, the model's native function calling

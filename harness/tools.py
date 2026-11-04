@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 
@@ -72,6 +73,53 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
         out = (proc.stdout or "") + (proc.stderr or "")
         out = _truncate(out.strip(), max_output_chars) or "(no output)"
         return f"exit={proc.returncode}\n{out}"
+
+    run_code_counter = 0
+
+    def t_run_code(code: str, output_path: str | None = None) -> str:
+        # 2026-11-04: a direct answer is attestation, an executed program
+        # is checkable. The model supplies Python code; the harness owns
+        # everything after that: it writes the code to an internal script
+        # (never a deliverable, and never listed), runs it with the same
+        # timeout and blocked-command guards as exec, and, when an output
+        # path is given, writes the program's exact stdout to that file
+        # itself. No transcription step stands between the computation
+        # and the file the Then verifier checks. A failed program writes
+        # no output file, so a stale or partial result cannot pass.
+        nonlocal run_code_counter
+        if not code or not code.strip():
+            raise ToolError("code must not be empty")
+        for blocked_pattern in blocked:
+            if blocked_pattern in code:
+                raise Refusal(f"blocked command pattern: {blocked_pattern!r}")
+        output_file_path = None
+        if output_path:
+            output_file_path = _resolve_for_write(output_path)
+        run_code_counter += 1
+        generated_script_path = jail.resolve(
+            f".harness/generated/run_code_{run_code_counter}.py")
+        generated_script_path.parent.mkdir(parents=True, exist_ok=True)
+        generated_script_path.write_text(code)
+        try:
+            completed_process = subprocess.run(
+                [sys.executable, str(generated_script_path)],
+                cwd=str(jail.root), capture_output=True, text=True,
+                timeout=exec_timeout)
+        except subprocess.TimeoutExpired:
+            raise ToolError(f"command timed out after {exec_timeout}s")
+        program_stdout = completed_process.stdout or ""
+        program_stderr = completed_process.stderr or ""
+        combined_output = program_stdout + program_stderr
+        combined_output = (_truncate(combined_output.strip(), max_output_chars)
+                           or "(no output)")
+        result_text = f"exit={completed_process.returncode}\n{combined_output}"
+        if output_file_path is not None:
+            if completed_process.returncode != 0:
+                return result_text + "\n(no output file written: the program failed)"
+            output_file_path.parent.mkdir(parents=True, exist_ok=True)
+            output_file_path.write_text(program_stdout)
+            result_text += f"\nwrote {len(program_stdout)} bytes to {output_path}"
+        return result_text
 
     def t_read_file(path: str, offset: int = 0, limit: int = 200) -> str:
         # Issue #49: a truncated read used to say only how many chars
@@ -235,6 +283,23 @@ def make_tools(jail: Jail, blocked: tuple[str, ...], exec_timeout: int,
                                                   "description": "Shell command to run."}},
                         "required": ["command"]},
          "func": lambda a: t_exec(a["command"])},
+        {"name": "run_code", "description":
+         "Run Python code and return its exact output. Use this instead of "
+         "answering a computation, count, or transformation in prose: write "
+         "code that computes it, let the harness run it, and use the output "
+         "it returns. When output_path is given, the harness writes the "
+         "program's stdout to that file itself, so the result is a file the "
+         "verifier can check rather than a claim in your answer. A program "
+         "that fails writes no output file.",
+         "parameters": {"type": "object",
+                        "properties": {
+                            "code": {"type": "string",
+                                     "description": "Python code to run."},
+                            "output_path": {"type": "string",
+                                            "description": "Optional workspace file "
+                                            "to receive the program's stdout."}},
+                        "required": ["code"]},
+         "func": lambda arguments: t_run_code(arguments["code"], arguments.get("output_path"))},
         {"name": "read_file", "description":
          "Read a text file, optionally paged by line offset/limit. "
          "If the result is cut short, it names the offset to read next: "

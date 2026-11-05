@@ -57,12 +57,17 @@ _EXTENSION_PATTERN = re.compile(r"\.([a-z]{2,4})\b")
 _TOKEN_PATTERN = re.compile(r"[a-z0-9]+")
 
 
-def _plans_directory(workspace: str | Path) -> Path:
+def _plans_directory(workspace: str | Path | None) -> Path | None:
+    if not workspace:
+        return None
     return Path(workspace) / ".harness" / PLANS_DIRECTORY_NAME
 
 
-def _index_path(workspace: str | Path) -> Path:
-    return _plans_directory(workspace) / INDEX_FILE_NAME
+def _index_path(workspace: str | Path | None) -> Path | None:
+    plans_directory = _plans_directory(workspace)
+    if plans_directory is None:
+        return None
+    return plans_directory / INDEX_FILE_NAME
 
 
 def _normalize_text(text: str) -> str:
@@ -82,12 +87,17 @@ def _deliverable_names(plan_text: str) -> list[str]:
     return found_names
 
 
-def _load_index(workspace: str | Path) -> list[dict]:
+def _load_index(workspace: str | Path | None) -> list[dict]:
     """The index records, or an empty list when the index is missing,
     corrupt, or not a list of records. History must never break
     planning, so every failure mode here degrades to empty."""
+    if not workspace:
+        return []
+    index_path = _index_path(workspace)
+    if index_path is None:
+        return []
     try:
-        index_text = _index_path(workspace).read_text()
+        index_text = index_path.read_text()
     except OSError:
         return []
     try:
@@ -101,22 +111,30 @@ def _load_index(workspace: str | Path) -> list[dict]:
             if isinstance(record, dict) and record.get("file_name")]
 
 
-def _write_index(workspace: str | Path, index_records: list[dict]) -> bool:
+def _write_index(workspace: str | Path | None, index_records: list[dict]) -> bool:
     plans_directory = _plans_directory(workspace)
+    if plans_directory is None:
+        return False
     try:
         plans_directory.mkdir(parents=True, exist_ok=True)
         temporary_path = plans_directory / (INDEX_FILE_NAME + ".tmp")
         temporary_path.write_text(json.dumps(index_records, indent=2))
-        temporary_path.replace(_index_path(workspace))
+        index_path = _index_path(workspace)
+        if index_path is None:
+            return False
+        temporary_path.replace(index_path)
     except OSError:
         logger.debug("plan history index could not be written", exc_info=True)
         return False
     return True
 
 
-def _remove_record_file(workspace: str | Path, record: dict) -> None:
+def _remove_record_file(workspace: str | Path | None, record: dict) -> None:
+    plans_directory = _plans_directory(workspace)
+    if plans_directory is None:
+        return
     try:
-        (_plans_directory(workspace) / record["file_name"]).unlink(missing_ok=True)
+        (plans_directory / record["file_name"]).unlink(missing_ok=True)
     except OSError:
         logger.debug("plan history file could not be removed", exc_info=True)
 
@@ -131,11 +149,16 @@ def _unique_file_name(plans_directory: Path, base_name: str) -> str:
     return candidate_name
 
 
-def save_plan(workspace: str | Path, plan_text: str, task_text: str = "",
-              status: str = "done", run_id: str = "") -> dict | None:
+def save_plan(workspace: str | Path | None, plan_text: str, task_text: str = "",
+              status: str = "done", run_id: str = "",
+              now: datetime | None = None) -> dict | None:
     """Save a parsed plan and its metadata, enforcing deduplication
     and the cap. Returns the saved record, or None when the plan does
-    not parse or the history cannot be written."""
+    not parse or the history cannot be written. The optional now
+    stamps the record, so callers can pass their run timestamp and
+    tests can assert timestamps deterministically."""
+    if not workspace:
+        return None
     parsed_plan, parse_error = gherkin.parse_feature(plan_text or "")
     if parsed_plan is None:
         logger.debug("plan history skipped an unparseable plan: %s", parse_error)
@@ -145,6 +168,8 @@ def save_plan(workspace: str | Path, plan_text: str, task_text: str = "",
     normalized_task = _normalize_text(task_text)
     plan_text_hash = hashlib.sha256(canonical_text.encode()).hexdigest()
     plans_directory = _plans_directory(workspace)
+    if plans_directory is None:
+        return None
     try:
         plans_directory.mkdir(parents=True, exist_ok=True)
     except OSError:
@@ -159,7 +184,8 @@ def save_plan(workspace: str | Path, plan_text: str, task_text: str = "",
             _remove_record_file(workspace, existing_record)
         else:
             kept_records.append(existing_record)
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    run_moment = now or datetime.now()
+    timestamp = run_moment.strftime("%Y%m%d-%H%M%S")
     title_slug = re.sub(r"[^a-z0-9]+", "-", parsed_plan.title.lower()).strip("-")[:30] or "plan"
     file_name = _unique_file_name(
         plans_directory, f"{timestamp}-{title_slug}-{plan_text_hash[:8]}.feature")
@@ -174,7 +200,7 @@ def save_plan(workspace: str | Path, plan_text: str, task_text: str = "",
         "task_text": task_text or "",
         "intents": step_intents,
         "status": status,
-        "saved_at": datetime.now().isoformat(timespec="seconds"),
+        "saved_at": run_moment.isoformat(timespec="seconds"),
         "step_count": len(parsed_plan.steps),
         "deliverable_names": _deliverable_names(canonical_text),
         "run_id": run_id or "",
@@ -189,27 +215,30 @@ def save_plan(workspace: str | Path, plan_text: str, task_text: str = "",
     return record
 
 
-def save_successful_plan(workspace: str | Path, plan_text: str, task_text: str = "",
-                         status: str = "", run_id: str = "") -> dict | None:
+def save_successful_plan(workspace: str | Path | None, plan_text: str, task_text: str = "",
+                         status: str = "", run_id: str = "",
+                         now: datetime | None = None) -> dict | None:
     """Save a plan only when its run finished fully verified. Any
     other status, and any history write failure, returns None instead
     of raising, so bookkeeping can never fail a run."""
     if status != "done":
         return None
     try:
-        return save_plan(workspace, plan_text, task_text=task_text, status=status, run_id=run_id)
+        return save_plan(workspace, plan_text, task_text=task_text, status=status, run_id=run_id, now=now)
     except Exception:
         logger.debug("plan history save failed, run status is unchanged", exc_info=True)
         return None
 
 
-def find_similar(workspace: str | Path, task_text: str,
+def find_similar(workspace: str | Path | None, task_text: str,
                  threshold: float = SIMILARITY_THRESHOLD,
                  limit: int = MAX_PRESENTED_PLANS) -> list[tuple[dict, float]]:
     """Saved plans ranked by token overlap with the new task, highest
     first, filtered to scores at or above the threshold. Returns an
     empty list when there is no history, the task has no content
     tokens, or nothing clears the threshold."""
+    if not workspace:
+        return []
     task_tokens = _tokenize(task_text)
     if not task_tokens:
         return []
@@ -238,15 +267,18 @@ def find_similar(workspace: str | Path, task_text: str,
     return ranked_matches[:limit]
 
 
-def best_match(workspace: str | Path, task_text: str) -> tuple[dict | None, str, float]:
+def best_match(workspace: str | Path | None, task_text: str) -> tuple[dict | None, str, float]:
     """The single best matching saved plan and its text, or empty
     values when nothing clears the threshold or its file is gone."""
     matches = find_similar(workspace, task_text)
     if not matches:
         return None, "", 0.0
     record, score = matches[0]
+    plans_directory = _plans_directory(workspace)
+    if plans_directory is None:
+        return None, "", 0.0
     try:
-        plan_text = (_plans_directory(workspace) / record["file_name"]).read_text()
+        plan_text = (plans_directory / record["file_name"]).read_text()
     except OSError:
         logger.debug("plan history file is missing for an index record", exc_info=True)
         return None, "", 0.0

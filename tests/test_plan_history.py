@@ -13,6 +13,7 @@ import json
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -60,12 +61,38 @@ def make_workspace():
     return temp_workspace
 
 
-def cleanup_workspace(temp_workspace):
+def _cleanup_workspace(temp_workspace):
     shutil.rmtree(temp_workspace)
 
 
 def history_directory(temp_workspace):
     return Path(temp_workspace) / ".harness" / "plans"
+
+
+def t_none_workspace_returns_empty():
+    check("find_similar with no workspace returns an empty list",
+          plan_history_module.find_similar(None, NEW_INDEX_TASK) == [])
+    check("save_plan with no workspace returns no record",
+          plan_history_module.save_plan(None, INDEX_PLAN, task_text=INDEX_TASK, status="done", run_id="run-none") is None)
+    check("best_match with no workspace returns no match",
+          plan_history_module.best_match(None, NEW_INDEX_TASK) == (None, "", 0.0))
+    check("save_successful_plan with no workspace returns no record",
+          plan_history_module.save_successful_plan(None, INDEX_PLAN, task_text=INDEX_TASK, status="done", run_id="run-none") is None)
+
+
+def t_save_plan_uses_given_timestamp():
+    temp_workspace = make_workspace()
+    try:
+        given_now = datetime(2026, 11, 5, 2, 30, 0)
+        record = plan_history_module.save_plan(temp_workspace, INDEX_PLAN, task_text=INDEX_TASK,
+                                               status="done", run_id="run-stamp", now=given_now)
+        check("save_plan with a given timestamp returns a record", record is not None, repr(record))
+        check("saved_at uses the given timestamp",
+              record is not None and record["saved_at"] == "2026-11-05T02:30:00", repr(record))
+        check("file name uses the given timestamp",
+              record is not None and record["file_name"].startswith("20261105-023000-"), repr(record))
+    finally:
+        _cleanup_workspace(temp_workspace)
 
 
 def t_no_saved_plans_returns_empty():
@@ -74,7 +101,7 @@ def t_no_saved_plans_returns_empty():
         matches = plan_history_module.find_similar(temp_workspace, NEW_INDEX_TASK)
         check("no saved plans returns an empty list", matches == [], repr(matches))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_missing_workspace_returns_empty():
@@ -84,7 +111,7 @@ def t_missing_workspace_returns_empty():
         matches = plan_history_module.find_similar(missing_workspace, NEW_INDEX_TASK)
         check("missing workspace returns an empty list", matches == [], repr(matches))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_matching_plan_ranks_first_above_threshold():
@@ -98,7 +125,7 @@ def t_matching_plan_ranks_first_above_threshold():
         check("matching plan scores at or above threshold",
               matches[0][1] >= plan_history_module.SIMILARITY_THRESHOLD, repr(matches))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_nonmatching_plan_is_not_returned():
@@ -108,7 +135,7 @@ def t_nonmatching_plan_is_not_returned():
         matches = plan_history_module.find_similar(temp_workspace, NEW_INDEX_TASK)
         check("non-matching plan is not returned", matches == [], repr(matches))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_save_writes_feature_file_and_index_entry():
@@ -129,7 +156,7 @@ def t_save_writes_feature_file_and_index_entry():
         check("index record carries the run id", index_records[0]["run_id"] == "run-index")
         check("index record carries the status", index_records[0]["status"] == "done")
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_unparseable_plan_is_not_saved():
@@ -140,7 +167,7 @@ def t_unparseable_plan_is_not_saved():
         check("unparseable plan creates no history directory",
               not history_directory(temp_workspace).exists())
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_deduplication_saves_second_and_removes_old():
@@ -157,19 +184,24 @@ def t_deduplication_saves_second_and_removes_old():
         check("new feature file exists",
               (history_directory(temp_workspace) / second_record["file_name"]).is_file())
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
+
+
+def seed_distinct_plans(temp_workspace, plan_count):
+    seeded_records = []
+    for plan_number in range(plan_count):
+        task_text = f"Do distinct task number {plan_number} with unique word zebra{plan_number}"
+        plan_text = INDEX_PLAN.replace("Recipe index", f"Distinct plan {plan_number}")
+        seeded_records.append(plan_history_module.save_plan(
+            temp_workspace, plan_text, task_text=task_text, status="done", run_id=f"run-{plan_number}"))
+    return seeded_records
 
 
 def t_cap_fifty_drops_oldest():
     temp_workspace = make_workspace()
     try:
-        first_record = None
-        for plan_number in range(51):
-            task_text = f"Do distinct task number {plan_number} with unique word zebra{plan_number}"
-            plan_text = INDEX_PLAN.replace("Recipe index", f"Distinct plan {plan_number}")
-            record = plan_history_module.save_plan(temp_workspace, plan_text, task_text=task_text, status="done", run_id=f"run-{plan_number}")
-            if plan_number == 0:
-                first_record = record
+        seeded_records = seed_distinct_plans(temp_workspace, 51)
+        first_record = seeded_records[0]
         index_records = json.loads((history_directory(temp_workspace) / "index.json").read_text())
         check("cap keeps at most fifty records", len(index_records) == 50, str(len(index_records)))
         check("oldest record is dropped",
@@ -179,7 +211,7 @@ def t_cap_fifty_drops_oldest():
         check("newest record is kept",
               any(record_item["run_id"] == "run-50" for record_item in index_records))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_corrupt_index_is_treated_as_empty():
@@ -195,7 +227,7 @@ def t_corrupt_index_is_treated_as_empty():
         check("save after a corrupt index rewrites a valid index",
               len(index_records) == 1, repr(index_records))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 def t_query_uses_title_and_intents_when_task_is_unknown():
@@ -206,11 +238,13 @@ def t_query_uses_title_and_intents_when_task_is_unknown():
         check("plan saved without a task still matches by title and intent",
               len(matches) == 1 and matches[0][0]["title"] == "Recipe index", repr(matches))
     finally:
-        cleanup_workspace(temp_workspace)
+        _cleanup_workspace(temp_workspace)
 
 
 if __name__ == "__main__":
-    for test_function in [t_no_saved_plans_returns_empty,
+    for test_function in [t_none_workspace_returns_empty,
+                          t_save_plan_uses_given_timestamp,
+                          t_no_saved_plans_returns_empty,
                           t_missing_workspace_returns_empty,
                           t_matching_plan_ranks_first_above_threshold,
                           t_nonmatching_plan_is_not_returned,

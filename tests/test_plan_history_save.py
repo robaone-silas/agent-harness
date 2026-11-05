@@ -9,10 +9,13 @@ never fail a successful run.
 
 Run: python3 tests/test_plan_history_save.py
 """
+import logging
 import shutil
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -92,6 +95,54 @@ def t_history_write_failure_never_raises():
         shutil.rmtree(temp_workspace)
 
 
+def t_save_successful_plan_passes_timestamp():
+    temp_workspace = tempfile.mkdtemp(prefix="plan-history-save-")
+    try:
+        given_now = datetime(2026, 11, 5, 2, 30, 0)
+        record = plan_history_module.save_successful_plan(
+            temp_workspace, INDEX_PLAN, task_text="Make an index", status="done",
+            run_id="run-stamp", now=given_now)
+        check("save_successful_plan with a given timestamp returns a record",
+              record is not None, repr(record))
+        check("save_successful_plan passes the timestamp through",
+              record is not None and record["saved_at"] == "2026-11-05T02:30:00", repr(record))
+    finally:
+        shutil.rmtree(temp_workspace)
+
+
+def t_show_past_plan_logs_lookup_failure():
+    captured_records = []
+
+    class CapturingHandler(logging.Handler):
+        def emit(self, captured_record):
+            captured_records.append(captured_record)
+
+    capturing_handler = CapturingHandler()
+    run_logger = logging.getLogger("run")
+    previous_level = run_logger.level
+    run_logger.setLevel(logging.DEBUG)
+    run_logger.addHandler(capturing_handler)
+    original_best_match = plan_history_module.best_match
+    try:
+        def failing_best_match(*args, **kwargs):
+            raise RuntimeError("history lookup is down")
+
+        plan_history_module.best_match = failing_best_match
+        fake_config = SimpleNamespace(workspace="/tmp/does-not-matter")
+        run_cli._show_past_plan("Make an index", fake_config)
+        check("past plan lookup failure does not raise", True)
+        check("past plan lookup failure is logged at debug",
+              len(captured_records) == 1 and captured_records[0].levelno == logging.DEBUG,
+              repr(captured_records))
+        check("past plan lookup failure log carries the exception",
+              len(captured_records) == 1 and captured_records[0].exc_info is not None
+              and captured_records[0].exc_info[0] is RuntimeError, repr(captured_records))
+    finally:
+        plan_history_module.best_match = original_best_match
+        run_logger.removeHandler(capturing_handler)
+        run_logger.setLevel(previous_level)
+
+
 def t_auto_reconstruction_preserves_steps():
     executed_steps = [
         PlanStep(id=1, instruction="List the files in the folder",
@@ -104,12 +155,32 @@ def t_auto_reconstruction_preserves_steps():
     rendered_text = run_cli._render_executed_plan("Make an index of the recipes", executed_steps)
     parsed_plan, parse_error = gherkin_module.parse_feature(rendered_text)
     check("auto reconstruction parses as valid Gherkin", parsed_plan is not None, parse_error)
-    check("auto reconstruction keeps both steps",
-          parsed_plan is not None and len(parsed_plan.steps) == 2)
+    if parsed_plan is None:
+        return
+    check("auto reconstruction keeps both steps", len(parsed_plan.steps) == 2)
     check("auto reconstruction keeps the step intent",
-          parsed_plan is not None and parsed_plan.steps[0].intent == "know exactly which recipes the index must cover")
+          parsed_plan.steps[0].intent == "know exactly which recipes the index must cover")
     check("auto reconstruction keeps the indexes Then",
-          parsed_plan is not None and '"recipe-index.md" indexes the files from step 1' in parsed_plan.steps[1].then)
+          '"recipe-index.md" indexes the files from step 1' in parsed_plan.steps[1].then)
+
+
+def t_auto_reconstruction_uses_first_line_of_multiline_task():
+    executed_steps = [
+        PlanStep(id=1, instruction="List the files in the folder",
+                 done_when="the output lists the recipe files",
+                 title="List the recipes", intent="know exactly which recipes the index must cover"),
+        PlanStep(id=2, instruction="Write recipe-index.md indexing the listed recipes",
+                 done_when='"recipe-index.md" indexes the files from step 1',
+                 title="Write the index"),
+    ]
+    rendered_text = run_cli._render_executed_plan(
+        "Make an index of the recipes\nfrom the folder\nfor the team", executed_steps)
+    parsed_plan, parse_error = gherkin_module.parse_feature(rendered_text)
+    check("multiline task reconstruction parses as valid Gherkin",
+          parsed_plan is not None, parse_error)
+    check("multiline task reconstruction uses the first line as the title",
+          parsed_plan is not None and parsed_plan.title == "Make an index of the recipes",
+          parsed_plan.title if parsed_plan is not None else parse_error)
 
 
 if __name__ == "__main__":
@@ -117,6 +188,9 @@ if __name__ == "__main__":
                           t_done_on_trust_run_does_not_save,
                           t_failed_run_does_not_save,
                           t_history_write_failure_never_raises,
-                          t_auto_reconstruction_preserves_steps]:
+                          t_save_successful_plan_passes_timestamp,
+                          t_show_past_plan_logs_lookup_failure,
+                          t_auto_reconstruction_preserves_steps,
+                          t_auto_reconstruction_uses_first_line_of_multiline_task]:
         test_function()
     print("\nAll plan history save tests passed.")

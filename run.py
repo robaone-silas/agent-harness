@@ -9,15 +9,20 @@ Modes:
   python3 run.py "task" --auto       plan and execute in one go (no approval)
 """
 import json
+import logging
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from harness import config, gherkin, graphcheck as _graphcheck, loop
+from harness import plan_history as _plan_history
 from harness import verify as _verify
 from harness import planner as _planner
+
+logger = logging.getLogger(__name__)
 
 
 def _then_lines(steps):
@@ -176,6 +181,41 @@ def run_discover(cfg, task) -> int:
     return propose_plan(cfg, task, planned=(text, result))
 
 
+def _render_executed_plan(task, steps) -> str:
+    """Rebuild canonical Gherkin from executed steps, for the auto
+    path, where run_planned returns steps but not the original plan
+    text. The task becomes the feature title; a multiline task is
+    reduced to its first line, since a feature title is a single line
+    and later lines would render as bare text that fails to parse.
+    Every step's title, intent, When, and Then lines are preserved."""
+    plan_title = task.splitlines()[0].strip() if task else "Task plan"
+    parsed_steps = []
+    for executed_step in steps:
+        parsed_steps.append(gherkin.ParsedStep(
+            title=executed_step.title or f"Step {executed_step.id}",
+            given=[line for line in (executed_step.given or "").split("\n") if line.strip()],
+            when=[line for line in (executed_step.instruction or "").split("\n") if line.strip()],
+            then=[line for line in (executed_step.done_when or "").split("\n") if line.strip()],
+            intent=executed_step.intent or "",
+        ))
+    return gherkin.render_feature(plan_title, parsed_steps)
+
+
+def _show_past_plan(task, cfg) -> None:
+    """Print the past plan the planner prompt used as an example, if
+    any, so the reviewer knows the new plan was influenced. History
+    lookup must never break proposing, so a failure is logged at debug
+    and the run continues without the past-plan line."""
+    try:
+        matched_record, _, matched_score = _plan_history.best_match(cfg.workspace, task)
+    except Exception:
+        logger.debug("past plan lookup failed, proposing without an example", exc_info=True)
+        return
+    if matched_record is not None:
+        print(f"Past plan used as an example: {matched_record['title']}, "
+              f"saved {matched_record['saved_at']}, score {matched_score:.2f}")
+
+
 def propose_plan(cfg, task, planned=None) -> int:
     """Ask the model for a Gherkin plan, write plan.feature, stop for review."""
     text, result = planned if planned is not None else _planner.propose(task, cfg)
@@ -186,6 +226,7 @@ def propose_plan(cfg, task, planned=None) -> int:
     canonical = gherkin.render_feature(plan.title, plan.steps)
     path = Path("plan.feature")
     path.write_text(canonical)
+    _show_past_plan(task, cfg)
     print(f"plan written to {path} — review it, edit if needed, then run:")
     print(f"  python3 run.py --run {path}\n")
     print("Read the Then lines first: they define what 'done' means for each step.")
@@ -224,6 +265,10 @@ def run_feature(cfg, path, stamp) -> int:
     result = _planner.execute_plan(
         plan.title, steps, cfg,
         on_event=lambda k, *a: show_event(k, *a, quiet=cfg.quiet))
+    run_moment = datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+    _plan_history.save_successful_plan(cfg.workspace, text, task_text="",
+                                       status=result.status, run_id=result.run_id,
+                                       now=run_moment)
     if not cfg.quiet:
         print(f"\n== {_display_status(result.status)} ==")
         _show_trust(result)
@@ -238,6 +283,12 @@ def run_auto(cfg, task, stamp) -> int:
         print(f"task: {task}\n")
     result = _planner.run_planned(
         task, cfg, on_event=lambda k, *a: show_event(k, *a, quiet=cfg.quiet))
+    if result.steps:
+        executed_plan_text = _render_executed_plan(task, result.steps)
+        run_moment = datetime.strptime(stamp, "%Y%m%d-%H%M%S")
+        _plan_history.save_successful_plan(cfg.workspace, executed_plan_text,
+                                           task_text=task, status=result.status,
+                                           run_id=result.run_id, now=run_moment)
     plan_path = cfg.trace_path or f"plan-{stamp}.json"
     if cfg.trace_path and not cfg.trace_path.endswith(".json"):
         plan_path = cfg.trace_path + ".plan.json"

@@ -178,11 +178,17 @@ def _discovery_findings_block(discovery: str) -> str:
 
 def build_planner_prompt(task: str, tool_names: list[str],
                          workspace: str | None = None,
-                         discovery: str = "") -> str:
+                         discovery: str = "",
+                         past_plan_text: str = "") -> str:
     idioms = _idiom_block(task)
     digest = workspace_digest(workspace)
     if discovery:
         digest += _discovery_findings_block(discovery)
+    if past_plan_text:
+        from .plan_history import format_example_section
+        past_plan_section = format_example_section(past_plan_text)
+    else:
+        past_plan_section = ""
     return f"""You are a planner. Break the task below into a short sequence of small steps.
 Write the plan in Gherkin — one Scenario per step, in order.
 
@@ -265,7 +271,7 @@ Rules:
   the exact path, so a later step can read an earlier step's real output.
   Still never invent the values themselves in a Then.
 - Do NOT add verify or summarize scenarios — the harness handles finishing.
-{_EXAMPLE_PLANS}- Return ONLY the Gherkin, no other text.
+{_EXAMPLE_PLANS}{past_plan_section}- Return ONLY the Gherkin, no other text.
 {idioms}{digest}Task: {task}"""
 
 

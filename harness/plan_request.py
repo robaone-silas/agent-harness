@@ -9,6 +9,7 @@ names, so existing imports keep working.
 from __future__ import annotations
 
 from . import gherkin
+from . import plan_history
 from .config import Config
 from .plan_model import PlanStep, step_budget
 from .plan_prompts import _root_workspace_files, build_planner_prompt
@@ -124,10 +125,13 @@ def request_plan(task: str, tool_names: list[str], chat_fn, config: Config,
     (deterministic plan lint). Either can trigger the one retry; findings are
     attached to the returned steps as s.lint for the approval display.
     Returns (gherkin_text, steps) or (None, error_string)."""
+    matched_plan = plan_history.best_match(config.workspace, task)
+    matched_plan_text = matched_plan[1]
     messages = [{"role": "user",
                  "content": build_planner_prompt(task, tool_names,
                                                   workspace=config.workspace,
-                                                  discovery=discovery)}]
+                                                  discovery=discovery,
+                                                  past_plan_text=matched_plan_text)}]
     last_problem = "no response"
     for attempt in (1, 2):
         try:

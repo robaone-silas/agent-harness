@@ -63,6 +63,22 @@ Checks:
                      and indexes cannot express per-record
                      field preservation). The warning makes the trust
                      visible at approval; it never blocks.
+  duplicate_deliverable (WARN): a step produces a deliverable file an
+                     earlier step already produced, so the plan carries
+                     two producing steps for one file (field, issue
+                     #49: Marcus's parts-order plan split compile and
+                     write across two steps targeting
+                     parts-order-list.txt, and nothing at plan time
+                     flagged it. On 2026-10-10 the redundant final
+                     write step looped reading the nested step record
+                     to error_limit and failed a run whose deliverable
+                     was correct; on 2026-10-19 the copy step
+                     overwrote the correct list with the step record's
+                     own text and the run still reported done). A
+                     second step that genuinely extends the same file
+                     is legitimate, so the warning is advisory only:
+                     it makes the redundancy visible at approval, it
+                     never blocks.
 """
 from __future__ import annotations
 
@@ -342,6 +358,64 @@ def _attested_compile_warnings(steps: list) -> list[LintFinding]:
     return findings
 
 
+def _then_targets(step) -> set[str]:
+    """Deliverable files a step's Then clauses name.
+
+    Same subject rule the main lint loop applies: a parsed clause's
+    target, or a prose clause's leading quoted subject, except a file
+    the clause wants gone (absence) or left as it was (preservation).
+    """
+    targets: set[str] = set()
+    for clause in (step.done_when or "").split("\n"):
+        clause = clause.strip()
+        if not clause:
+            continue
+        subject = _verify.then_subject_file(clause)
+        if subject and not _verify.absence_intent(clause) \
+                and not _verify.preservation_intent(clause):
+            targets.add(subject)
+    return targets
+
+
+def _duplicate_deliverable_warnings(steps: list) -> list[LintFinding]:
+    """The duplicate-deliverable warning (issue #49).
+
+    Fires on a step that produces a deliverable file an earlier step
+    already produced. Two producing steps naming the same file is the
+    plan shape behind both #49 field failures: on 2026-10-10 the
+    redundant final write step looped reading the nested step record
+    to error_limit and failed a run whose deliverable was correct;
+    on 2026-10-19 the copy step overwrote the correct list with the
+    step record's own text and the run still reported done. A second
+    step that genuinely extends the same file (draft, then append)
+    is legitimate, so this is advisory only: it makes the redundancy
+    visible at approval, it does not block the plan. A step that
+    only checks the file, with no produce verb in its When, never
+    warns."""
+    produced_by: dict[str, int] = {}
+    findings: list[LintFinding] = []
+    for s in steps:
+        if not _PRODUCE_VERB.search(s.instruction or ""):
+            continue
+        for target in sorted(_then_targets(s)):
+            first_step = produced_by.get(target)
+            if first_step is None:
+                produced_by[target] = s.id
+            else:
+                findings.append(LintFinding(
+                    s.id, "warn", "duplicate_deliverable",
+                    f"Step {s.id}: this step produces \"{target}\", "
+                    f"which step {first_step} already produced. A "
+                    f"later step that only copies the earlier step's "
+                    f"output is likely to copy it back through the "
+                    f"step record, which can overwrite a correct "
+                    f"deliverable with record text, so check that "
+                    f"this step adds work step {first_step} does not "
+                    f"already claim, or fold it into step "
+                    f"{first_step}."))
+    return findings
+
+
 def _workspace_file_set(workspace_files) -> set[str] | None:
     """Normalize the optional workspace root file set for lint_plan.
 
@@ -550,6 +624,7 @@ def lint_plan(task: str, steps: list,
     if drift is not None:
         findings.append(drift)
     findings.extend(_attested_compile_warnings(steps))
+    findings.extend(_duplicate_deliverable_warnings(steps))
     findings.extend(_workspace_warnings(
         task, steps, workspace_set, generic_listing, indexes_any,
         output_files))

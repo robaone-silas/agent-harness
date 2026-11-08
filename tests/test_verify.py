@@ -248,9 +248,18 @@ def t_covers_clause_falls_to_attestation():
     check("indexes clause still parses",
           (verify.parse_then('"guide.md" indexes the files from step 1')
            or (None,))[0] == "indexes")
+    check("indexes documents variant parses",
+          (verify.parse_then('"guide.md" indexes the documents from step 1')
+           or (None,))[0] == "indexes")
+    check("indexes has one entry variant parses",
+          (verify.parse_then('"guide.md" has one entry for each document from step 1, with a one-line description of each')
+           or (None,))[0] == "indexes")
     check("accounts_for clause still parses",
           (verify.parse_then('"guide.md" accounts for the files '
                              'from step 1')
+           or (None,))[0] == "accounts_for")
+    check("accounts_for documents variant parses",
+          (verify.parse_then('"guide.md" accounts for the documents from step 1')
            or (None,))[0] == "accounts_for")
 
 

@@ -18,8 +18,23 @@ RUNS = ROOT / "slice0-runs"
 
 TASKS = {
     "Tomas": "Which of my appliances is the oldest? Write the answer in a file for me, with the year for each appliance.",
-    "Maya": "Make an index of all the documents in this folder, with a one-line description of each.",
+    "Maya": "Create docs-index.md with one entry per document in this workspace: the exact filename and a one-line description of what the document is about. Do not change the source documents.",
 }
+
+NOV2_PLANS = ROOT / "features" / "fixtures" / "nov2-plans"
+
+NOV2_MAYA_STEP2_THEN = (
+    '"docs-index.md" has one entry for api-notes.md and one entry for '
+    "deploy.md and one entry for setup.md, where each entry contains the "
+    "exact filename and a one-line description of what the document is about"
+)
+
+
+def _nov2_plan(persona):
+    plan_path = NOV2_PLANS / f"{persona.lower()}-2026-11-02.feature"
+    plan, error = gherkin.parse_feature(plan_path.read_text())
+    assert plan is not None, error
+    return planner.to_plan_steps(plan)
 
 PLANS = {
     "narrowed": """Feature: Oldest appliance
@@ -168,4 +183,51 @@ def then_machine_completeness(context):
                 p = verify.parse_then(t.strip())
                 verbs.append((s.id, p[0] if p else None, t.strip()))
     (context.run_dir / "then-verbs.json").write_text(json.dumps(verbs, indent=2))
-    assert any(v in ("indexes", "accounts_for", "covers") for _, v, _ in verbs), verbs
+    assert any(v in ("indexes", "accounts_for") for _, v, _ in verbs), verbs
+
+
+@given("the exact November 2 plan for {persona}")
+def given_nov2_plan(context, persona):
+    context.persona = persona
+    context.steps = _nov2_plan(persona)
+
+
+@then("step 2 Then is the exact November 2 wording and parses to no verifier")
+def then_nov2_maya_then_unparsed(context):
+    step_two = context.steps[1]
+    then_lines = [line.strip() for line in step_two.done_when.split("\n") if line.strip()]
+    assert then_lines == [NOV2_MAYA_STEP2_THEN], then_lines
+    parsed = [verify.parse_then(line) for line in then_lines]
+    assert all(entry is None for entry in parsed), parsed
+
+
+@given("the November 2 discovery findings for Tomas")
+def given_nov2_discovery_findings(context):
+    context.discovery_findings = (
+        NOV2_PLANS / "tomas-2026-11-02-discovery-findings.txt").read_text()
+
+
+@then("discovery knew all three appliance years")
+def then_discovery_knew_years(context):
+    for year in ("2016", "2018", "2021"):
+        assert year in context.discovery_findings, context.discovery_findings
+
+
+@then("step 1 keeps the full requirement, one year for each appliance")
+def then_step_one_keeps_requirement(context):
+    step_one_then = context.steps[0].done_when
+    assert "for each appliance" in step_one_then, step_one_then
+
+
+@then("step 2 narrows the requirement to the oldest appliance only")
+def then_step_two_narrows(context):
+    step_two_then = context.steps[1].done_when
+    assert "for each appliance" not in step_two_then, step_two_then
+    assert "oldest" in step_two_then, step_two_then
+
+
+@then("step 3 requires only the dryer and the year 2016")
+def then_step_three_narrowed_contract(context):
+    step_three_then = context.steps[2].done_when
+    assert "2016" in step_three_then, step_three_then
+    assert "2018" not in step_three_then and "2021" not in step_three_then, step_three_then

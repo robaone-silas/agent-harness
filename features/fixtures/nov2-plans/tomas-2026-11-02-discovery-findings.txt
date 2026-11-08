@@ -1,0 +1,4 @@
+The oldest appliance is the dryer, installed in 2016.
+Dryer: 2016
+Fridge: 2018
+Washer: 2021

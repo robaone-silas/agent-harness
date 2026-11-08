@@ -1,5 +1,5 @@
 Feature: Slice 0 replication of the November 2, 2026 daily failures (issue 37)
-  Replicate both failures against main 683870b with gemma4:e2b before any fix is built.
+  Replay the exact November 2 failures against the branch code with gemma4:e2b before any fix is built.
 
   @deterministic @tomas
   Scenario: Plan-time narrowing passes lint when the Intent promises every year but When and Then require one
@@ -19,6 +19,20 @@ Feature: Slice 0 replication of the November 2, 2026 daily failures (issue 37)
     Given the Maya plan "prose_index"
     When plan lint runs on it for the Maya task
     Then no Then clause on the deliverable step parses to indexes, accounts_for, or covers
+
+  @deterministic @maya
+  Scenario: The exact November 2 Maya plan carries a Then no verifier parses
+    Given the exact November 2 plan for Maya
+    Then step 2 Then is the exact November 2 wording and parses to no verifier
+
+  @deterministic @tomas
+  Scenario: The exact November 2 Tomas plan narrows the requirement at step 2
+    Given the November 2 discovery findings for Tomas
+    Then discovery knew all three appliance years
+    Given the exact November 2 plan for Tomas
+    Then step 1 keeps the full requirement, one year for each appliance
+    And step 2 narrows the requirement to the oldest appliance only
+    And step 3 requires only the dryer and the year 2016
 
   @live @tomas
   Scenario Outline: Tomas oldest appliance, discovery plan then execution (trial <trial>)

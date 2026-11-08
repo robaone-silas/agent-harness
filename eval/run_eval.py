@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Micro-eval for the harness: 5 tiny tasks, each with a programmatic checker.
+"""Micro-eval for the harness: 6 tiny tasks, each with a programmatic checker.
 
 Run against a real model:
     python3 eval/run_eval.py --model gemma4:e2b
@@ -79,8 +79,21 @@ def _check_bug(sbox: Path):
     return True, "ok"
 
 
+def _setup_count(sbox: Path):
+    pass
+
 def _setup_multi(sbox: Path):
     pass
+
+def _check_count(sbox: Path):
+    p = sbox / "count.txt"
+    if not p.is_file():
+        return False, "count.txt not created"
+    if p.read_text().strip() != "4":
+        return False, (f"wrong count: got {p.read_text()!r}, expected exactly '4' "
+                       f"— the plain integer, no extra text, for the letter 'e' "
+                       f"in 'seventeen'")
+    return True, "ok"
 
 def _check_multi(sbox: Path):
     main, out = sbox / "src" / "main.py", sbox / "out.txt"
@@ -129,6 +142,11 @@ TASKS = [
      "task": ("Create a src/ directory. Inside it, write main.py that prints its own filename. "
               "Run it with python3 and save its output to out.txt in the workspace root."),
      "setup": _setup_multi, "check": _check_multi},
+    {"name": "count-with-code",
+     "task": ("Count how many times the letter 'e' appears in the word 'seventeen'. "
+              "Use the run_code tool to compute the count, and write just the number "
+              "to count.txt"),
+     "setup": _setup_count, "check": _check_count},
 ]
 
 

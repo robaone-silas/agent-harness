@@ -7,6 +7,8 @@ demo-trace.jsonl
 sandbox/
 plan-*.json
 plan.feature
+slice0-runs/
+slice0-*.log
 # python
 __pycache__/
 *.pyc

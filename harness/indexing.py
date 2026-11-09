@@ -37,7 +37,9 @@ MAX_CONTENT_CHARS = 6000
 MAX_DESCRIPTION_CHARS = 240
 
 _CLAUSE_SOURCE = re.compile(
-    r"indexes\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
+    r"(?:indexes\s+the\s+(?:files?|documents?|items?|records?|papers?)|"
+    r"has\s+one\s+entry\s+for\s+each\s+(?:files?|documents?|items?|records?|papers?))\s+"
+    r"(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
 

@@ -82,13 +82,16 @@ _COVERS_CLAUSE = re.compile(
 # edge treats indexes exactly like covers: both consume the listing
 # field a listing step produces).
 _INDEXES_SOURCE = re.compile(
-    r"indexes\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
+    r"(?:indexes\s+the\s+(?:files?|documents?|items?|records?|papers?)|"
+    r"has\s+one\s+entry\s+for\s+each\s+(?:files?|documents?|items?|records?|papers?))\s+"
+    r"(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
 # The source step named by an accounts_for clause: same listing
 # consumption, names only.
 _ACCOUNTS_SOURCE = re.compile(
-    r"accounts?\s+for\s+the\s+files\s+(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
+    r"accounts?\s+for\s+the\s+(?:files?|documents?|items?|records?|papers?)\s+"
+    r"(?:from|listed\s+(?:in|by))\s+step\s+(\d+)",
     re.IGNORECASE,
 )
 # A step produces a file list when its When lists or gathers files.

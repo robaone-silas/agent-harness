@@ -117,9 +117,16 @@ def _check_completeness(match: regular_expression.Match, verify_context: VerifyC
     return CheckResult(then, ok, wording.verifier_name, detail)
 
 
+_COMPLETENESS_NOUNS = r"(?:files?|documents?|items?|records?|papers?)"
+_INDEXES_PHRASING = (
+    rf"""(?:indexes\s+the\s+{_COMPLETENESS_NOUNS}|"""
+    rf"""has\s+one\s+entry\s+for\s+each\s+{_COMPLETENESS_NOUNS})"""
+)
+
+
 @verifier("indexes",
-          rf"""^{_FILE}{_QPATH}\s+indexes\s+the\s+files\s+"""
-          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
+          rf"""^{_FILE}{_QPATH}\s+{_INDEXES_PHRASING}\s+"""
+          rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)(?:\s*,\s*.*)?\s*[.!]?\s*$""")
 def _v_indexes(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
     """The productive counterpart of covers: the step declares that
     its target is an index of step N's files, built by the harness
@@ -138,7 +145,7 @@ def _v_indexes(match: regular_expression.Match, verify_context: VerifyContext) -
           # there is no legitimate sampling, so every listed file
           # must appear. Phrasing tolerance mirrors covers (optional
           # contents-of prefix).
-          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+files\s+"""
+          rf"""^(?:the\s+contents?\s+of\s+|contents?\s+of\s+)?{_FILE}{_QPATH}\s+accounts?\s+for\s+the\s+{_COMPLETENESS_NOUNS}\s+"""
           rf"""(?:from|listed\s+(?:in|by))\s+step\s+(\d+)\s*[.!]?\s*$""")
 def _v_accounts_for(match: regular_expression.Match, verify_context: VerifyContext) -> CheckResult:
     return _check_completeness(match, verify_context, _ACCOUNTS_FOR_WORDING)

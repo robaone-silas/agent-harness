@@ -310,6 +310,23 @@ def t_well_formed_plan_runtime_failure_is_out_of_scope():
           fs == [], f"{[(f.code, f.detail) for f in fs]}")
 
 
+def t_indexes_phrasing_variants_create_listing_edge():
+    # Issue #37 Slice 1: indexes phrasing variants create listing edge.
+    for variant in [
+        '"audit-index.md" indexes the documents from step 1',
+        '"audit-index.md" has one entry for each document from step 1, with a one-line description of each',
+    ]:
+        steps = [PlanStep(id=1, instruction="I list the files in the folder",
+                          done_when="the output lists the files"),
+                 PlanStep(id=2, instruction="I read each document and write audit-index.md",
+                          done_when=variant)]
+        g = graphcheck.build_graph(PRIYA_TASK, steps)
+        check(f"variant consumes listing: {variant}",
+              "files from step 1" in g.nodes[1].inputs, str(g.nodes[1].inputs))
+        fs = graphcheck.check_plan(PRIYA_TASK, steps)
+        check(f"variant has no findings: {variant}", len(fs) == 0, str(fs))
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items())
            if k.startswith("t_") and callable(v)]

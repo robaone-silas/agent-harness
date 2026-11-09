@@ -143,6 +143,56 @@ def t_indexes_verifier():
         shutil.rmtree(d)
 
 
+def t_indexes_verifier_phrasing_variants():
+    # Issue #37 Slice 1: Maya phrasing variants for index completeness.
+    # The planner may use "documents", "items", "records", or "papers"
+    # instead of "files", or phrase the Then as "has one entry for each <noun>
+    # from step N" (with optional trailing description qualifiers).
+    from unittest.mock import Mock
+    variants = [
+        '"docs-index.md" indexes the documents from step 1',
+        '"docs-index.md" indexes the items from step 1',
+        '"docs-index.md" indexes the records from step 1',
+        '"docs-index.md" has one entry for each document from step 1',
+        '"docs-index.md" has one entry for each file from step 1',
+        '"docs-index.md" has one entry for each document from step 1, with a one-line description of each',
+    ]
+    for clause in variants:
+        parsed = _verify.parse_then(clause)
+        check(f"variant parses to indexes: {clause}",
+              parsed is not None and parsed[0] == "indexes"
+              and parsed[1] == "docs-index.md", str(parsed))
+
+    for clause in variants:
+        mock_step = Mock(done_when=clause)
+        extracted = indexing.clause_for(mock_step)
+        check(f"clause_for extracts target and source: {clause}",
+              extracted == ("docs-index.md", 1), str(extracted))
+
+    d = _workspace()
+    try:
+        jail = Jail(d)
+        ctx = _verify.VerifyContext(
+            jail=jail, step_id=2, task="index documents",
+            prior_items={1: ["api-notes.md", "deploy.md", "setup.md"]})
+        Path(d, "docs-index.md").write_text(
+            "- api-notes.md: API endpoints.\n- deploy.md: Deployment steps.\n")
+        res = _verify.verify_step(
+            ['"docs-index.md" has one entry for each document from step 1, with a one-line description of each'],
+            ctx)
+        check("variant fails when item is missing",
+              not res.ok, str([(c.ok, c.detail) for c in res.checks]))
+        Path(d, "docs-index.md").write_text(
+            "- api-notes.md: API endpoints.\n- deploy.md: Deployment steps.\n- setup.md: Setup guide.\n")
+        res2 = _verify.verify_step(
+            ['"docs-index.md" has one entry for each document from step 1, with a one-line description of each'],
+            ctx)
+        check("variant passes when all items appear",
+              res2.ok, str([(c.ok, c.detail) for c in res2.checks]))
+    finally:
+        shutil.rmtree(d)
+
+
 def _run_plan(describe_fail_for=None):
     """Run PLAN with a scripted model. Returns (result, prompts, dir).
 

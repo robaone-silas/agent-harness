@@ -148,11 +148,32 @@ Feature: Seed packet inventory
     When I read each packet file from step 1 and write seed-inventory.txt with the plant name and its purpose
     Then "seed-inventory.txt" has one entry for each packet from step 1, naming the plant and what it is for
 
+Task: Which vehicle in this fleet has the highest mileage? Write the answer in a file, with the mileage for each vehicle
+Feature: Fleet vehicle mileage
+  Scenario: Step 1 - Read the vehicle logs
+    Intent: know the mileage of each vehicle
+    When I read "van-log.txt", "truck-log.txt", and "car-log.txt"
+    Then the output shows the mileage for each vehicle
+  Scenario: Step 2 - Find the highest mileage vehicle
+    Intent: determine which vehicle has the highest mileage
+    When I compare the mileage figures from step 1
+    Then the output identifies the vehicle with the highest mileage
+  Scenario: Step 3 - Write the report
+    Intent: write the vehicle with the highest mileage and the mileage for each vehicle to a file
+    When I write "fleet-mileage.txt" naming the highest mileage vehicle and listing the mileage for each vehicle from step 1
+    Then "fleet-mileage.txt" contains the highest mileage vehicle and the mileage for each vehicle
+
 In the catalog example, note the shape: the per-item steps only gather,
 and the final step still answers for every song from step 1 in a
 single clause. Splitting the work across steps
 never splits away the completeness obligation, and the obligation is
 never scattered into one clause per file.
+
+In the fleet mileage example, note the shape for comparison tasks: the
+second step finds the highest mileage, and the final step carries BOTH the
+comparison result and the per-vehicle mileage into the deliverable.
+Answering the comparison must not narrow away the requirement to include
+details for each item in the deliverable.
 
 """
 
@@ -258,6 +279,11 @@ Rules:
   its When to match the Intent: a description is not the content, and a
   summary is not the source text. Decomposition that drops the task's
   specification produces work that is finished and wrong.
+- When a task asks a question (such as which appliance is oldest or which item
+  has the highest value) and also asks for details for each item (such as the
+  year or status for each), carry the full requirement into the final step: do
+  not let the deliverable step narrow to only the single answer. Restate all
+  requested fields in the final step's Intent, When, and Then.
 - The Then must accurately describe THIS step's expected outcome. A precisely
   worded wrong expectation fails verification just as surely as a vague one.
 - Concrete values come from the task statement only — never <angle-bracket

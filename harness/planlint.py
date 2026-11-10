@@ -52,24 +52,24 @@ Checks:
                      result, so nobody can tell whether the deliverable
                      is a file to open or words in an answer (field,
                      issue #6: Tomas's plan named no deliverable at all).
-   attested_compile   (WARN): a step writes a deliverable out of what
-                      earlier read steps gathered, and every Then clause
-                      guarding that deliverable is on trust, so nothing
-                      checks that the compiled file keeps what the
-                      earlier steps gathered (field, issue #37: Marcus's
-                      work list dropped every customer and status the
-                      task required while the run reported done; the
-                      existence floor passed because the file exists,
-                      and indexes cannot express per-record
-                      field preservation). The warning makes the trust
-                      visible at approval; it never blocks.
-   plan_narrowing     (WARN): a step compiles a deliverable where the
-                      task or step Intent promises details for each/every
-                      item (field, issue #37: Tomas's oldest appliance
-                      answer dropped the fridge 2018 and washer 2021
-                      years because the deliverable step narrowed its
-                      contract to the oldest appliance alone). The warning
-                      makes the dropped scope visible at approval.
+  attested_compile   (WARN): a step writes a deliverable out of what
+                     earlier read steps gathered, and every Then clause
+                     guarding that deliverable is on trust, so nothing
+                     checks that the compiled file keeps what the
+                     earlier steps gathered (field, issue #37: Marcus's
+                     work list dropped every customer and status the
+                     task required while the run reported done; the
+                     existence floor passed because the file exists,
+                     and indexes cannot express per-record
+                     field preservation). The warning makes the trust
+                     visible at approval; it never blocks.
+  plan_narrowing     (WARN): a step compiles a deliverable where the
+                     task or step Intent promises details for each/every
+                     item (field, issue #37: Tomas's oldest appliance
+                     answer dropped the fridge 2018 and washer 2021
+                     years because the deliverable step narrowed its
+                     contract to the oldest appliance alone). The warning
+                     makes the dropped scope visible at approval.
 """
 from __future__ import annotations
 
@@ -174,7 +174,7 @@ _EXTREMUM_WORDS = re.compile(
     re.IGNORECASE,
 )
 _RETAINS_SCOPE = re.compile(
-    r"\b(?:each|every|all|preserves|indexes)\b",
+    r"\b(?:each|every|all|preserves|indexes|accounts_for|accounts)\b",
     re.IGNORECASE,
 )
 
@@ -457,6 +457,8 @@ def _step_narrows_intent(step) -> LintFinding | None:
     if _RETAINS_SCOPE.search(when_then):
         return None
     if not _EXTREMUM_WORDS.search(when_then):
+        return None
+    if not (_PRODUCE_VERB.search(when) or _mentions(then)):
         return None
     scope_phrase = scope_match.group(0)
     return LintFinding(

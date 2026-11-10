@@ -150,12 +150,50 @@ def t_preserves_clause_clean():
           str([(finding.step_id, finding.detail) for finding in warnings]))
 
 
+def t_accounts_for_clause_clean():
+    accounts_plan = """Feature: Appliance records
+  Scenario: Step 1 - List records
+    When I list the appliance files
+    Then I have the file list
+  Scenario: Step 2 - Record accounts for listing
+    Intent: record each appliance to find the oldest
+    When I write "appliance-summary.txt" with the oldest appliance
+    Then "appliance-summary.txt" accounts for the files from step 1
+"""
+    warnings = narrowing_warnings_for(TOMAS_TASK, accounts_plan)
+    check("accounts for clause prevents narrowing warning", warnings == [],
+          str([(finding.step_id, finding.detail) for finding in warnings]))
+
+
+def t_intermediate_comparison_step_clean():
+    plan_text = """Feature: Oldest appliance
+  Scenario: Step 1 - Read the appliance records
+    Intent: know the year of each appliance
+    When I read "dryer-manual.txt", "fridge-receipt.txt", and "washer-receipt.txt"
+    Then the output shows the year for each appliance
+  Scenario: Step 2 - Compare each record
+    Intent: compare each appliance to find the oldest
+    When I compare the years from step 1
+    Then I know the oldest appliance
+  Scenario: Step 3 - Write the answer
+    Intent: write the answer in a file for the user, with the year for each appliance
+    When I write "oldest-appliance.txt" naming the oldest appliance and listing the year for each appliance from step 1
+    Then "oldest-appliance.txt" contains the oldest appliance and the year for each appliance
+"""
+    warnings = narrowing_warnings_for(TOMAS_TASK, plan_text)
+    check("intermediate comparison step does not produce false narrowing warning",
+          warnings == [],
+          str([(finding.step_id, finding.detail) for finding in warnings]))
+
+
 def main():
     t_tomas_oct18_narrowed_intent_warns()
     t_tomas_nov02_narrowed_task_warns()
     t_tomas_full_requirement_clean()
     t_single_selection_task_clean()
     t_preserves_clause_clean()
+    t_accounts_for_clause_clean()
+    t_intermediate_comparison_step_clean()
     print("\nAll plan narrowing warning tests passed.")
 
 

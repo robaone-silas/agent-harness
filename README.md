@@ -222,6 +222,11 @@ Gherkin validation, before the plan reaches the user:
   nowhere in the task or prior steps — computed or invented?
 - `unparseable_check` (WARN): a Then reads like a check but matches no
   verifier, so it will be taken on trust.
+- `duplicate_deliverable` (WARN): a step produces a deliverable file an
+  earlier step already produced, so two producing steps target one file
+  (issue #49: the redundant copy step behind the 2026-10-10 false
+  failure and the 2026-10-19 overwritten deliverable). Advisory only;
+  a second step that genuinely extends the same file is legitimate.
 
 Findings print at approval time next to the verifier badges. Known
 limit, documented in tests: a When and Then that *consistently*

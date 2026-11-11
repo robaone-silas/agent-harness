@@ -153,11 +153,30 @@ def t_compile_exemplar_guards_with_preserves_and_excludes():
           repr(compile_step.then if compile_step else None))
 
 
+def t_comparison_exemplar_retains_full_requirement():
+    prompt = planner.build_planner_prompt("organize my stuff", ["list_dir"])
+    check("comparison exemplar present", "fleet-mileage.txt" in prompt)
+    check("comparison note present",
+          "Answering the comparison must not narrow away the requirement" in prompt)
+    fleet_start = prompt.index("Feature: Fleet vehicle mileage")
+    next_index = prompt.index("In the catalog example", fleet_start)
+    plan_text = prompt[fleet_start:next_index]
+    parsed_plan, parse_error = gherkin_mod.parse_feature(plan_text)
+    check("comparison exemplar parses as valid Gherkin", parsed_plan is not None, parse_error)
+    assert parsed_plan is not None
+    check("comparison exemplar has 3 steps", len(parsed_plan.steps) == 3)
+    step3 = parsed_plan.steps[2]
+    check("step 3 intent retains each vehicle", "for each vehicle" in step3.intent)
+    check("step 3 when retains each vehicle", any("for each vehicle" in w for w in step3.when))
+    check("step 3 then retains each vehicle", any("for each vehicle" in t for t in step3.then))
+
+
 if __name__ == "__main__":
     for test_function in [t_examples_present_with_intent,
                           t_examples_come_before_task_and_digest_stays_last,
                           t_content_shaped_exemplars_use_attested_clauses,
                           t_compile_exemplar_guards_with_preserves_and_excludes,
+                          t_comparison_exemplar_retains_full_requirement,
                           t_request_plan_still_works_with_examples]:
         test_function()
     print("\nAll planner example tests passed.")

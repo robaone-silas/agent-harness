@@ -63,6 +63,13 @@ Checks:
                      and indexes cannot express per-record
                      field preservation). The warning makes the trust
                      visible at approval; it never blocks.
+  plan_narrowing     (WARN): a step compiles a deliverable where the
+                     task or step Intent promises details for each/every
+                     item (field, issue #37: Tomas's oldest appliance
+                     answer dropped the fridge 2018 and washer 2021
+                     years because the deliverable step narrowed its
+                     contract to the oldest appliance alone). The warning
+                     makes the dropped scope visible at approval.
   duplicate_deliverable (WARN): a step produces a deliverable file an
                      earlier step already produced, so the plan carries
                      two producing steps for one file (field, issue
@@ -173,6 +180,19 @@ _READ_VERB = re.compile(r"\bread\w*\b", re.IGNORECASE)
 # rest entirely on trust.
 _CONTENT_CHECKS = {"contains", "contains_exactly", "has_lines",
                    "indexes", "accounts_for"}
+_EXHAUSTIVE_SCOPE = re.compile(
+    r"\b(?:for\s+each|each|every|all)\s+([a-z_-]+)",
+    re.IGNORECASE,
+)
+_EXTREMUM_WORDS = re.compile(
+    r"\b(?:oldest|newest|latest|earliest|highest|lowest|minimum|maximum|"
+    r"cheapest|most|least|best|worst|first|last|single|only|corresponding)\b",
+    re.IGNORECASE,
+)
+_RETAINS_SCOPE = re.compile(
+    r"\b(?:each|every|all|preserves|indexes|accounts_for|accounts)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -500,6 +520,72 @@ def _workspace_warnings(task: str, steps: list, workspace_set,
     return findings
 
 
+def _step_narrows_intent(step) -> LintFinding | None:
+    intent = getattr(step, "intent", "") or ""
+    scope_match = _EXHAUSTIVE_SCOPE.search(intent)
+    if not scope_match:
+        return None
+    when = step.instruction or ""
+    then = step.done_when or ""
+    when_then = f"{when}\n{then}"
+    if _RETAINS_SCOPE.search(when_then):
+        return None
+    if not _EXTREMUM_WORDS.search(when_then):
+        return None
+    if not (_PRODUCE_VERB.search(when) or _mentions(then)):
+        return None
+    scope_phrase = scope_match.group(0)
+    return LintFinding(
+        step.id, "warn", "plan_narrowing",
+        f"Step {step.id}: Intent promises {scope_phrase}, but When and Then "
+        f"narrow the deliverable to a single item — plan narrowing drops "
+        f"the remaining items from the deliverable.")
+
+
+def _step_narrows_task_scope(task: str, step) -> LintFinding | None:
+    task_scope = _EXHAUSTIVE_SCOPE.search(task or "")
+    if not task_scope:
+        return None
+    when = step.instruction or ""
+    then = step.done_when or ""
+    intent = getattr(step, "intent", "") or ""
+    all_step_text = f"{intent}\n{when}\n{then}"
+    if _RETAINS_SCOPE.search(all_step_text):
+        return None
+    if not _EXTREMUM_WORDS.search(f"{when}\n{then}"):
+        return None
+    if not (_PRODUCE_VERB.search(when) or _mentions(then)):
+        return None
+    scope_phrase = task_scope.group(0)
+    return LintFinding(
+        step.id, "warn", "plan_narrowing",
+        f"Step {step.id}: the task and earlier read steps require "
+        f"{scope_phrase}, but When and Then narrow the deliverable to "
+        f"a single item — plan narrowing drops the remaining items from "
+        f"the deliverable.")
+
+
+def _check_step_narrowing(task: str, step, earlier_gathers: bool) -> LintFinding | None:
+    intent_finding = _step_narrows_intent(step)
+    if intent_finding is not None:
+        return intent_finding
+    if not earlier_gathers:
+        return None
+    return _step_narrows_task_scope(task, step)
+
+
+def _plan_narrowing_warnings(task: str, steps: list) -> list[LintFinding]:
+    findings: list[LintFinding] = []
+    earlier_gathers = False
+    for step in steps:
+        finding = _check_step_narrowing(task, step, earlier_gathers)
+        if finding is not None:
+            findings.append(finding)
+        if _gathers_sources(step):
+            earlier_gathers = True
+    return findings
+
+
 def lint_plan(task: str, steps: list,
               workspace_files=None) -> list[LintFinding]:
     """Lint a proposed plan. `steps` are PlanStep (id, instruction, done_when).
@@ -624,6 +710,7 @@ def lint_plan(task: str, steps: list,
     if drift is not None:
         findings.append(drift)
     findings.extend(_attested_compile_warnings(steps))
+    findings.extend(_plan_narrowing_warnings(task, steps))
     findings.extend(_duplicate_deliverable_warnings(steps))
     findings.extend(_workspace_warnings(
         task, steps, workspace_set, generic_listing, indexes_any,
